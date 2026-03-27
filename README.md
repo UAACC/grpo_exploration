@@ -19,7 +19,25 @@ Standard GRPO is an **on-policy** algorithm: the model generates its own rollout
 | **Mixture A (Unified)** | `mixture_grpo/method_A_unified/` | Merges online student and offline teacher completions into a single group for joint advantage normalization. |
 | **Mixture B (Weighted)** | `mixture_grpo/method_B_weighted/` | Computes separate online and offline losses, combines them with a weighting factor λ. |
 
-All methods use **LoRA** fine-tuning (r=32, α=32, all linear layers) and **PPO-style clipping** (ε=0.2).
+All methods use **LoRA** fine-tuning and **PPO-style clipping** (ε=0.2).
+
+## LoRA Configuration
+
+Each method defines its own LoRA defaults. The shell scripts for recent experiments override offline GRPO's defaults to r=32/α=32 for controlled comparison.
+
+| Setting | Online GRPO | Mixture A & B | Offline GRPO (code default) | Offline GRPO (recent experiments) |
+|---------|-------------|---------------|----------------------------|-----------------------------------|
+| Rank (`r`) | 32 | 32 | 16 | 32 |
+| Alpha (`lora_alpha`) | 32 | 32 | 64 | 32 |
+| Target modules | `all-linear` | `all-linear` | `q/k/v/o/up/down/gate_proj` | `q/k/v/o/up/down/gate_proj` |
+| Dropout | 0.0 | 0.05 | 0.05 | 0.05 |
+| Task type | `CAUSAL_LM` | `CAUSAL_LM` | `CAUSAL_LM` | `CAUSAL_LM` |
+
+**Notes**:
+- `all-linear` targets all linear layers including `q_proj`, `k_proj`, `v_proj`, `o_proj`, `up_proj`, `down_proj`, `gate_proj`, plus the `lm_head` embedding layer. The explicit list in offline GRPO excludes `lm_head`.
+- The effective LoRA scaling factor is `alpha / r`. With r=32, α=32 the scaling is 1.0; with r=16, α=64 the scaling is 4.0.
+- LoRA defaults are defined in `configs.py` (`DEFAULT_LORA_CONFIG`) for offline and mixture methods. Online GRPO defines them as argparse defaults in `train.py`.
+- Controlled experiments (`run_controlled_math.sh`, `run_teacher_self_math.sh`) override offline defaults via `--lora_r 32 --lora_alpha 32` to match online GRPO settings.
 
 ## Models
 
