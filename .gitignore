@@ -1,0 +1,39 @@
+# Ignore everything by default
+*
+
+# Track these three folders
+!mixture_grpo/
+!offline_grpo/
+!online_grpo/
+
+# Track root-level supporting files
+!run_eval_all.sh
+!setup_downloads.sh
+!.gitignore
+!requirements.txt
+
+# Within tracked folders, include all code recursively
+!mixture_grpo/**
+!offline_grpo/**
+!online_grpo/**
+
+# But exclude runtime artifacts everywhere
+**/__pycache__/
+**/*.pyc
+**/logs/
+**/wandb/
+**/.wandb_key
+**/outputs/
+**/.claude/
+
+# Exclude large data files
+*.jsonl
+*.tar.gz
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# Exclude env/IDE
+.venv/
+*.egg-info/
