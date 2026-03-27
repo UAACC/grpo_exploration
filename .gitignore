@@ -7,6 +7,7 @@
 !online_grpo/
 
 # Track root-level supporting files
+!README.md
 !run_eval_all.sh
 !setup_downloads.sh
 !.gitignore
