@@ -1,10 +1,11 @@
 # Ignore everything by default
 *
 
-# Track these three folders
+# Track these folders
 !mixture_grpo/
 !offline_grpo/
 !online_grpo/
+!DG-offline/
 
 # Track root-level supporting files
 !README.md
@@ -17,6 +18,7 @@
 !mixture_grpo/**
 !offline_grpo/**
 !online_grpo/**
+!DG-offline/**
 
 # But exclude runtime artifacts everywhere
 **/__pycache__/
