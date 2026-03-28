@@ -19,9 +19,11 @@ Standard GRPO is an **on-policy** algorithm: the model generates its own rollout
 | **Mixture A (Unified)** | `mixture_grpo/method_A_unified/` | Merges online student and offline teacher completions into a single group for joint advantage normalization. |
 | **Mixture B (Weighted)** | `mixture_grpo/method_B_weighted/` | Computes separate online and offline losses, combines them with a weighting factor λ. |
 
-All methods use **LoRA** fine-tuning and **PPO-style clipping** (ε=0.2).
+All methods train with **PPO-style clipping** (ε=0.2) and use **LoRA** adapters to reduce the trainable parameter count (~3.4% of total) and provide a zero-cost reference model for the KL penalty (via `disable_adapter()`).
 
-## LoRA Configuration
+## LoRA Adapter Settings
+
+LoRA is used purely for parameter efficiency — only low-rank adapter weights are trained while the base model is frozen. This also gives us a free reference model for KL penalty computation: calling `model.disable_adapter()` recovers the original base model without loading a separate copy.
 
 Each method defines its own LoRA defaults. The shell scripts for recent experiments override offline GRPO's defaults to r=32/α=32 for controlled comparison.
 
