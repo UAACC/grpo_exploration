@@ -21,13 +21,16 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import GRPOConfig
 
-# Add parent directories for shared modules
+# Import local trainer BEFORE adding offline_grpo to sys.path
+# (both have trainer.py — local must resolve first)
+from trainer import DGOfflineTrainer
+
+# Add offline_grpo for shared data loading utilities
 _this_dir = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(_this_dir)
 sys.path.insert(0, os.path.join(_project_root, "offline_grpo"))
 
 from data import load_rollouts, compute_rewards_and_advantages, build_training_dataset, build_offline_lookup
-from trainer import DGOfflineTrainer
 
 
 class MetricsFileCallback(TrainerCallback):
