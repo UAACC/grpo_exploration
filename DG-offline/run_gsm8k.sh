@@ -25,7 +25,7 @@ EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py
 
 STUDENT_MODEL="${STUDENT_MODEL:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
 TEACHER_MODEL="${TEACHER_MODEL:-${SCRATCH}/models/Qwen2.5-Math-7B-Instruct}"
-ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/gsm8k_teacher/rollouts_gsm8k_full.jsonl}"
+ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/gsm8k_teacher/rollouts_gsm8k.jsonl}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/dg_offline_gsm8k}"
 MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/dg_offline_gsm8k}"
 
@@ -75,7 +75,7 @@ if [ "$CMD" = "train" ]; then
         --num_generations 5 \
         --per_device_train_batch_size 5 \
         --gradient_accumulation_steps 2 \
-        --num_train_epochs 1 \
+        --num_train_epochs 5 \
         --max_completion_length 1024 \
         --max_grad_norm 1.0 \
         --weight_decay 0.01 \

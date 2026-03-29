@@ -6,6 +6,7 @@
 !offline_grpo/
 !online_grpo/
 !DG-offline/
+!bc/
 
 # Track root-level supporting files
 !README.md
@@ -19,6 +20,7 @@
 !offline_grpo/**
 !online_grpo/**
 !DG-offline/**
+!bc/**
 
 # But exclude runtime artifacts everywhere
 **/__pycache__/

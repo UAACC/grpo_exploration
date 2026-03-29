@@ -26,11 +26,12 @@ EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py
 
 STUDENT_MODEL="${STUDENT_MODEL:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
 TEACHER_MODEL="${TEACHER_MODEL:-${SCRATCH}/models/Qwen2.5-Math-7B-Instruct}"
-ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/math_teacher/rollouts_math_full.jsonl}"
+ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/dg_offline_math}"
 MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/dg_offline_math}"
 
 # ---- DG hyperparameters -----------------------------------------------
+#if not set, default to 1.0 (no gating)
 DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
 
