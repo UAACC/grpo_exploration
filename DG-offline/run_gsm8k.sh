@@ -8,7 +8,7 @@
 #
 #SBATCH --account=aip-szepesva
 #SBATCH --job-name=dg-offline-gsm8k
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=l40s:4
 #SBATCH --cpus-per-task=64

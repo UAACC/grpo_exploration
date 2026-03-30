@@ -10,6 +10,8 @@
 
 # Track root-level supporting files
 !README.md
+!docs/
+!docs/**
 !run_eval_all.sh
 !setup_downloads.sh
 !.gitignore
