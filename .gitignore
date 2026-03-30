@@ -11,7 +11,9 @@
 # Track root-level supporting files
 !README.md
 !docs/
-!docs/**
+docs/*
+!docs/progress_reports/
+!docs/progress_reports/**
 !run_eval_all.sh
 !setup_downloads.sh
 !.gitignore
