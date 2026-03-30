@@ -16,8 +16,10 @@ Standard GRPO is an **on-policy** algorithm: the model generates its own rollout
 |--------|-----------|-------------|
 | **Online GRPO** | `online_grpo/` | Standard on-policy GRPO. Student generates completions via vLLM at each step. |
 | **Offline GRPO** | `offline_grpo/` | Off-policy GRPO on pre-collected teacher rollouts with IS correction (π_student/π_teacher). |
+| **DG-Offline** | `DG-offline/` | Delightful Policy Gradient for offline GRPO. Replaces IS ratios with a sigmoid gate on delight = advantage × surprisal. |
 | **Mixture A (Unified)** | `mixture_grpo/method_A_unified/` | Merges online student and offline teacher completions into a single group for joint advantage normalization. |
 | **Mixture B (Weighted)** | `mixture_grpo/method_B_weighted/` | Computes separate online and offline losses, combines them with a weighting factor λ. |
+| **BC** | `bc/` | Behavioral cloning baseline — pure cross-entropy on teacher completions. Also contains analysis scripts. |
 
 All methods train with **PPO-style clipping** (ε=0.2) and use **LoRA** adapters to reduce the trainable parameter count (~3.4% of total) and provide a zero-cost reference model for the KL penalty (via `disable_adapter()`).
 
@@ -87,6 +89,21 @@ Each method defines its own LoRA defaults. The shell scripts for recent experime
 │   ├── generate_rollouts.py     # Teacher rollout generation
 │   ├── diagnose_method_B.py     # Hypothesis testing for Method B failure modes
 │   └── run_*.sh                 # SLURM job scripts
+│
+├── DG-offline/
+│   ├── train.py                 # DG-offline training script
+│   ├── trainer.py               # DGOfflineTrainer (delight gating, no IS ratios)
+│   ├── configs/                 # Accelerate configs
+│   └── run_*.sh                 # SLURM scripts (MATH and GSM8K, eta configurable)
+│
+├── bc/
+│   ├── train_bc.py              # Behavioral cloning training
+│   ├── eval_best_of_n.py        # Best-of-N evaluation (pass@1 and pass@N)
+│   ├── analyze_gap.py           # Generation comparison: student vs teacher
+│   ├── analyze_branching.py     # Probability distributions at branching points
+│   ├── agreement_on_student_ctx.py  # Token agreement on student-generated context
+│   ├── diagnose_bc.py           # BC implementation verification
+│   └── run_*.sh                 # SLURM scripts
 │
 ├── setup_downloads.sh           # Download models and datasets to scratch
 ├── run_eval_all.sh              # Batch evaluation of all models on all tasks
@@ -253,6 +270,109 @@ Teacher rollouts are stored as JSONL. Each line contains one problem with N comp
 - `logprobs`: Per-token log-probabilities from the behavior policy (raw, pre-temperature)
 - `completion_ids`: Token IDs of the generated completion
 - Reward is computed at training time using `math_verify` (MATH) or numeric comparison (GSM8K)
+
+## Key Findings
+
+### 1. Offline methods don't add knowledge — the student already knows the math
+
+Best-of-N evaluation (sample 16 completions, check if any is correct) reveals the untrained student already has the knowledge to solve most problems:
+
+| Model | pass@1 (greedy) | pass@16 (best of 16) |
+|-------|----------------|---------|
+| **Baseline (untrained 0.5B)** | 26.8% | **61.4%** |
+| BC (all completions) | 24.2% | 61.0% |
+| BC (correct only) | 26.4% | 60.4% |
+| Offline GRPO | 26.4% | 60.2% |
+| Mixture A | 27.2% | 61.2% |
+| Mixture B | 25.8% | 60.8% |
+| DG-offline η=0.5 | **29.0%** | **64.2%** |
+| Online GRPO | **31.8%** | **64.4%** |
+
+All standard offline methods (BC, offline GRPO, mixtures) leave pass@16 unchanged at ~61%. They shuffle greedy preferences but don't add or remove knowledge. Online GRPO and DG-offline (η=0.5) are the only methods that raise pass@16, meaning they actually teach the student new problem-solving approaches.
+
+### 2. The accuracy gap is about strategy selection, not token-level knowledge
+
+Branching point analysis on 82 "gap" problems (teacher correct, student wrong) reveals:
+- The teacher's chosen token is in the student's **top-5** at 92.7% of branching points
+- Mean rank of teacher's token in student's distribution: **2.0**
+- Mean probability: **22.5%**
+- Token-level agreement between student and teacher is **92%** regardless of who generated the context
+
+The student and teacher diverge at the **very first line** in 100% of gap problems. The student picks a different problem-solving strategy (e.g., brute force instead of factoring), then writes internally coherent but wrong reasoning. The correct strategy is available in the student's distribution — it's just not the greedy argmax.
+
+### 3. DG-offline outperforms all other offline methods
+
+DG-offline (Delightful Policy Gradient) replaces IS ratios with a sigmoid gate on delight = advantage × surprisal, computed entirely from the learner's own policy. On MATH:
+
+| η (temperature) | pass@1 | pass@16 |
+|-----------------|--------|---------|
+| 0.1 | 29.0% | 62.4% |
+| **0.5** | **29.0%** | **64.2%** |
+| 1.0 | 28.1% | 63.4% |
+| 2.0 | 27.9% | 62.2% |
+
+η=0.5 is the sweet spot. Lower η gives more aggressive filtering — it suppresses surprising failures while amplifying surprising successes. This results in less total KL drift from the base model but higher quality updates (compared to η=2.0 which drifts 5x more in worse directions).
+
+### 4. Best-of-N dramatically closes the gap to the teacher
+
+| Task | Student greedy | Student best-of-16 | Teacher greedy |
+|------|---------------|-------------------|----------------|
+| MATH | 26.8% | 61.4% | 75.0% |
+| GSM8K | 43.6% | 86.1% | 95.7% |
+
+The gap shrinks from 48pp to 14pp on MATH and from 52pp to 10pp on GSM8K — with zero training, just by sampling 16 times. This suggests the primary bottleneck is **search/decoding**, not model capacity or training data.
+
+## DG-Offline: Delightful Policy Gradient
+
+Based on Osband (2026), "Delightful Distributed Policy Gradient" (arXiv:2603.20521). See `dg-offline_imp.md` for full technical details.
+
+### How it works
+
+Standard offline GRPO weights each gradient by the IS ratio π_student/π_teacher (clipped PPO-style). DG-offline replaces this with:
+
+```
+weight = σ(advantage × surprisal / η)
+```
+
+where surprisal = -log π_student(completion) measures how unlikely the teacher's completion is under the **student's own policy**. No behavior policy logprobs are needed.
+
+The gate has asymmetric behavior:
+- **Surprising success** (positive advantage, high surprisal) → gate ≈ 1 → amplify
+- **Surprising failure** (negative advantage, high surprisal) → gate ≈ 0 → suppress
+- **Expected outcome** (low surprisal) → gate ≈ 0.5 → pass through
+
+### Usage
+
+```bash
+cd DG-offline
+
+# Train with default η=1.0
+sbatch run_math.sh
+
+# Eta sweep (η=0.5 recommended)
+DG_ETA=0.5 CHECKPOINT_DIR=/scratch/$USER/checkpoints/dg_eta0.5 sbatch --job-name=dg-eta0.5 run_math.sh
+
+# Evaluate
+sbatch run_math.sh eval /path/to/checkpoint
+
+# Best-of-N evaluation
+cd ../bc
+MODEL=/path/to/merged/model python eval_best_of_n.py \
+    --model_path $MODEL --n_samples 16 --temperature 0.6 --dataset_type math
+```
+
+## Analysis Scripts (bc/)
+
+The `bc/` directory contains diagnostic and analysis scripts beyond BC training:
+
+| Script | Purpose |
+|--------|---------|
+| `eval_best_of_n.py` | Best-of-N evaluation (pass@1 and pass@N) for MATH and GSM8K |
+| `analyze_gap.py` | Side-by-side generation comparison, quadrant analysis (both correct / teacher only / student only / both wrong), divergence point detection |
+| `analyze_branching.py` | Full probability distributions at the first divergence token — where does the teacher's token rank in the student's distribution? |
+| `agreement_on_student_ctx.py` | Token agreement measured on student-generated context (vs teacher context) |
+| `diagnose_bc.py` | 9-check BC implementation verification |
+| `train_bc.py` | BC training with LoRA on teacher completions |
 
 ## Key Implementation Details
 
