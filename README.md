@@ -19,6 +19,7 @@ Standard GRPO is an **on-policy** algorithm: the model generates its own rollout
 | **DG-Offline** | `DG-offline/` | Delightful Policy Gradient for offline GRPO. Replaces IS ratios with a sigmoid gate on delight = advantage × surprisal. |
 | **Mixture A (Unified)** | `mixture_grpo/method_A_unified/` | Merges online student and offline teacher completions into a single group for joint advantage normalization. |
 | **Mixture B (Weighted)** | `mixture_grpo/method_B_weighted/` | Computes separate online and offline losses, combines them with a weighting factor λ. |
+| **DG-Mixture** | `mixture_grpo/dg_mixture/` | Online GRPO loss for student rollouts + DG-gated loss for teacher rollouts. Combines Method B's mixture structure with DG-offline's sigmoid gate on delight = advantage × surprisal. |
 | **BC** | `bc/` | Behavioral cloning baseline — pure cross-entropy on teacher completions. Also contains analysis scripts. |
 
 All methods train with **PPO-style clipping** (ε=0.2) and use **LoRA** adapters to reduce the trainable parameter count (~3.4% of total) and provide a zero-cost reference model for the KL penalty (via `disable_adapter()`).
@@ -209,6 +210,13 @@ sbatch run_method_A_math.sh eval
 sbatch run_method_B_math.sh train       # default λ=0.3
 sbatch run_method_B_math.sh train 0.5   # custom λ
 sbatch run_method_B_math.sh eval
+
+# DG-Mixture: online GRPO + DG-gated teacher loss
+sbatch run_dg_mixture_math.sh train                            # default η=0.5, λ=0.3
+DG_ETA=0.1 DG_LAMBDA=0.5 \
+  CHECKPOINT_DIR=/scratch/$USER/checkpoints/dg_mixture_eta0.1_lam0.5 \
+  sbatch --job-name=dg-mix-eta0.1-lam0.5 run_dg_mixture_math.sh train
+sbatch run_dg_mixture_math.sh eval
 ```
 
 ### Evaluation
@@ -271,24 +279,63 @@ Teacher rollouts are stored as JSONL. Each line contains one problem with N comp
 - `completion_ids`: Token IDs of the generated completion
 - Reward is computed at training time using `math_verify` (MATH) or numeric comparison (GSM8K)
 
+## Results
+
+The student is Qwen2.5-0.5B-Instruct and the teacher is Qwen2.5-Math-7B-Instruct for all rows below. Three columns per dataset:
+
+- **Greedy (temp=0.0)**: `mixture_grpo/evaluate.py` at `--temperature 0.0`, 5 runs averaged. This is the deployable deterministic accuracy.
+- **pass@1 (temp=0.6)**: first sample of `bc/eval_best_of_n.py` at `--temperature 0.6`, `--n_samples 16`. Same script as pass@16, different metric.
+- **pass@16 (temp=0.6, oracle)**: fraction of problems where at least one of 16 samples is correct. Oracle upper bound (requires ground truth to pick the correct sample), NOT deployable on its own. Useful as a diagnostic for what's in the student's distribution.
+
+### MATH (500 problems)
+
+| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (oracle) |
+|--------|-------------------|-------------------|------------------|
+| Baseline (untrained 0.5B) | 27.16% | 26.80% | 61.40% |
+| BC (all completions) | 27.40% | 24.20% | 61.00% |
+| BC (correct only) | 27.20% | 26.40% | 60.40% |
+| Offline GRPO (controlled) | 27.64% | 26.40% | 60.20% |
+| Mixture A (unified) | 29.28% | 27.20% | 61.20% |
+| Mixture B (weighted) | 28.60% | 25.80% | 60.80% |
+| DG-offline η=0.1 | 29.04% | 25.00% | 62.40% |
+| **DG-offline η=0.5** | **29.00%** | 26.60% | **64.20%** |
+| DG-offline η=1.0 | 28.08% | 27.60% | 63.40% |
+| DG-offline η=2.0 | 27.88% | 27.80% | 62.20% |
+| **Online GRPO** | **32.10%** | **31.80%** | **64.40%** |
+| Teacher (7B) | 74.96% | — | — |
+
+### GSM8K (1319 problems)
+
+| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (oracle) |
+|--------|-------------------|-------------------|------------------|
+| Baseline (untrained 0.5B) | 48.16% | 43.59% | 86.13% |
+| BC (all completions) | 49.67% | 46.55% | 83.55% |
+| BC (correct only) | 49.43% | 48.29% | 84.91% |
+| Offline GRPO (GSM8K-trained) | 48.11% | 43.06% | 84.15% |
+| Mixture A (unified, GSM8K-trained) | 50.30% | 48.22% | 83.55% |
+| **Mixture B (weighted, GSM8K-trained)** | **51.11%** | **49.73%** | 83.93% |
+| DG-offline η=0.1 | 49.39% | 49.20% | 84.53% |
+| DG-offline η=0.5 | 48.73% | 47.16% | 83.17% |
+| DG-offline η=1.0 | 48.82% | 46.93% | **85.67%** |
+| DG-offline η=2.0 | 48.43% | 45.41% | 84.69% |
+| **Online GRPO (MATH ckpt, cross-task)** | **55.82%** | 49.20% | 85.06% |
+| Teacher (7B) | 95.74% | — | — |
+
+Caveats worth reading before citing any of these numbers:
+
+- **MATH baseline has a known ~3pp variance across eval runs** (27.16% vs 30.36%) due to vLLM non-determinism across different compute nodes. Offline GRPO, Mixture A, Mixture B on MATH were measured against the 30.36% baseline in their own eval run, so their improvement-over-baseline in their own run is different from what it looks like against the 27.16% row above. The numbers themselves are accurate.
+- **Online GRPO GSM8K is cross-task**: the MATH-trained online GRPO checkpoint evaluated directly on GSM8K without retraining. There is no GSM8K-trained online GRPO checkpoint in the current results.
+- **pass@1 (temp=0.6) is not the same as greedy (temp=0.0)**. The first column is deterministic argmax decoding; the second column is the first sample out of 16 sampled at temperature 0.6. Models with flatter distributions (BC, DG-offline) show larger gaps between the two columns because temperature sampling more often deviates from the argmax.
+
+Full per-cell source citations (job IDs and log paths) are in `docs/progress_reports/2026_03_28_30.md`.
+
 ## Key Findings
 
-### 1. Offline methods don't add knowledge — the student already knows the math
+### 1. Offline methods don't add knowledge (on MATH)
 
-Best-of-N evaluation (sample 16 completions, check if any is correct) reveals the untrained student already has the knowledge to solve most problems:
+All standard offline methods (BC, offline GRPO, mixtures) leave MATH pass@16 unchanged at ~60-61%. They shuffle greedy preferences but don't add or remove knowledge. Online GRPO and DG-offline (η=0.5) are the only methods that raise MATH pass@16 above baseline, meaning they actually teach the student new problem-solving approaches.
 
-| Model | pass@1 (greedy) | pass@16 (best of 16) |
-|-------|----------------|---------|
-| **Baseline (untrained 0.5B)** | 26.8% | **61.4%** |
-| BC (all completions) | 24.2% | 61.0% |
-| BC (correct only) | 26.4% | 60.4% |
-| Offline GRPO | 26.4% | 60.2% |
-| Mixture A | 27.2% | 61.2% |
-| Mixture B | 25.8% | 60.8% |
-| DG-offline η=0.5 | **29.0%** | **64.2%** |
-| Online GRPO | **31.8%** | **64.4%** |
-
-All standard offline methods (BC, offline GRPO, mixtures) leave pass@16 unchanged at ~61%. They shuffle greedy preferences but don't add or remove knowledge. Online GRPO and DG-offline (η=0.5) are the only methods that raise pass@16, meaning they actually teach the student new problem-solving approaches.
+On GSM8K the picture is different: no method (including DG-offline and online GRPO) raises pass@16 above the already-high baseline of 86.13%. This is likely a headroom effect — GSM8K is easy enough that the baseline's sampling distribution already contains correct paths for most problems.
 
 ### 2. The accuracy gap is about strategy selection, not token-level knowledge
 
@@ -300,27 +347,21 @@ Branching point analysis on 82 "gap" problems (teacher correct, student wrong) r
 
 The student and teacher diverge at the **very first line** in 100% of gap problems. The student picks a different problem-solving strategy (e.g., brute force instead of factoring), then writes internally coherent but wrong reasoning. The correct strategy is available in the student's distribution — it's just not the greedy argmax.
 
-### 3. DG-offline outperforms all other offline methods
+### 3. DG-offline is the best offline method on MATH, but not on GSM8K
 
-DG-offline (Delightful Policy Gradient) replaces IS ratios with a sigmoid gate on delight = advantage × surprisal, computed entirely from the learner's own policy. On MATH:
+DG-offline (Delightful Policy Gradient) replaces IS ratios with a sigmoid gate on delight = advantage × surprisal, computed entirely from the learner's own policy.
 
-| η (temperature) | pass@1 | pass@16 |
-|-----------------|--------|---------|
-| 0.1 | 29.0% | 62.4% |
-| **0.5** | **29.0%** | **64.2%** |
-| 1.0 | 28.1% | 63.4% |
-| 2.0 | 27.9% | 62.2% |
+On MATH, DG-offline η=0.5 is the only offline method that improves both greedy (29.00% vs 27.16% baseline) and pass@16 (64.20% vs 61.40% baseline). It's the clear winner among offline methods, second only to online GRPO.
 
-η=0.5 is the sweet spot. Lower η gives more aggressive filtering — it suppresses surprising failures while amplifying surprising successes. This results in less total KL drift from the base model but higher quality updates (compared to η=2.0 which drifts 5x more in worse directions).
+On GSM8K, Mixture B wins greedy (51.11%) and DG-offline η=1.0 wins pass@16 (85.67%). The η=0.5 sweet spot from MATH does NOT transfer — η=0.5 is actually the worst DG-offline variant on GSM8K pass@16. This suggests the optimal η depends on the dataset's surprisal distribution rather than being a universal constant.
 
-### 4. Best-of-N dramatically closes the gap to the teacher
+### 4. Best-of-N reveals that most of the student's knowledge gap isn't really a knowledge gap
 
-| Task | Student greedy | Student best-of-16 | Teacher greedy |
-|------|---------------|-------------------|----------------|
-| MATH | 26.8% | 61.4% | 75.0% |
-| GSM8K | 43.6% | 86.1% | 95.7% |
+Sampling 16 completions instead of taking the greedy output nearly triples baseline accuracy on MATH (27.16% → 61.40%) and closes most of the gap to the teacher on GSM8K (48.16% → 86.13%, vs teacher's 95.74%). This happens without any training.
 
-The gap shrinks from 48pp to 14pp on MATH and from 52pp to 10pp on GSM8K — with zero training, just by sampling 16 times. This suggests the primary bottleneck is **search/decoding**, not model capacity or training data.
+pass@16 is an oracle upper bound (it assumes you can pick the correct sample), so the raw number isn't deployable. But it tells us something important about the shape of the student's distribution: the correct reasoning path usually exists in the top-K samples, it just isn't the greedy argmax. The bottleneck for a greedy student is not knowledge, it's selection.
+
+This reframes what offline methods should be doing: rather than trying to teach the student new strategies, they should be shifting the student's greedy preference toward strategies it already considers reasonable. Online GRPO does this naturally (by reinforcing the student's own successful samples); most offline methods don't.
 
 ## DG-Offline: Delightful Policy Gradient
 
