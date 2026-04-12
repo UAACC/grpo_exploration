@@ -105,11 +105,16 @@ def compute_rewards_and_advantages(records: list[dict], eps: float = 1e-4) -> li
     for rec in records:
         ds = rec.get("dataset_type", dataset_type)
         extracted = rec["extracted_answer"]
-        if ds == "gsm8k":
-            # Re-extract if not already done
+        if ds in ("gsm8k", "svamp", "asdiv"):
+            # Try stored extracted_answer, then try boxed format
+            # (the 7B Math teacher outputs \boxed{} even on numeric tasks)
             if extracted is None:
                 extracted = extract_gsm8k_answer(rec["response"])
             rec["reward"] = _compute_correctness_gsm8k(extracted, rec["ground_truth"])
+            if rec["reward"] == 0.0:
+                boxed = extract_boxed_answer(rec["response"])
+                if boxed is not None:
+                    rec["reward"] = _compute_correctness_gsm8k(boxed, rec["ground_truth"])
         else:
             if extracted is None:
                 extracted = extract_boxed_answer(rec["response"])

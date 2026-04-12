@@ -21,13 +21,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from trl import GRPOConfig
 from datasets import load_dataset
 
-# Add parent dir to path for shared modules
+# Add parent dir + shared to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from configs import (DEFAULT_TARGET_MODEL, DEFAULT_LORA_CONFIG,
-                     GSM8K_SYSTEM_PROMPT, GSM8K_DATASET,
-                     MATH_SYSTEM_PROMPT, MATH_DATASET)
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(_project_root, "shared"))
+from configs import DEFAULT_TARGET_MODEL, DEFAULT_LORA_CONFIG
 from data import load_teacher_rollouts
 from method_A_unified.trainer import UnifiedMixtureGRPOTrainer
+from datasets_registry import get_dataset_config, load_eval_data, list_datasets
 
 
 def parse_args():
@@ -37,7 +38,7 @@ def parse_args():
     # Data
     p.add_argument("--teacher_rollout_path", type=str, required=True)
     p.add_argument("--dataset_type", type=str, default="gsm8k",
-                    choices=["gsm8k", "math"], help="Dataset type.")
+                    choices=list_datasets(), help="Dataset type.")
     p.add_argument("--dataset", type=str, default=None,
                     help="Override dataset path. Defaults based on dataset_type.")
     p.add_argument("--split", type=str, default="train")
@@ -78,12 +79,9 @@ def main():
     args = parse_args()
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    # ---- 1. Resolve dataset defaults ------------------------------------
-    is_math = args.dataset_type == "math"
-    if args.dataset is None:
-        args.dataset = MATH_DATASET if is_math else GSM8K_DATASET
-    system_prompt = MATH_SYSTEM_PROMPT if is_math else GSM8K_SYSTEM_PROMPT
-    question_field = "problem" if is_math else "question"
+    # ---- 1. Resolve dataset from registry --------------------------------
+    cfg = get_dataset_config(args.dataset_type)
+    manual_split = "train" if cfg.name == "asdiv" else None
 
     # ---- 2. Load teacher rollouts --------------------------------------
     model_config = AutoConfig.from_pretrained(args.target_model)
@@ -97,20 +95,17 @@ def main():
     correct_runs = sum(sum(1 for r in v["runs"] if r["reward"] > 0) for v in teacher_data.values())
     print(f"  Teacher accuracy: {correct_runs}/{total_runs} ({100*correct_runs/total_runs:.1f}%)")
 
-    # ---- 3. Build training dataset (prompts only) ----------------------
-    if is_math:
-        data = load_dataset(args.dataset)[args.split]
-    else:
-        data = load_dataset(args.dataset, "main", split=args.split)
-    print(f"  Dataset ({args.dataset_type}): {len(data)} problems ({args.split} split)")
+    # ---- 3. Build training dataset (prompts only, via registry) --------
+    problems = load_eval_data(cfg, split=cfg.split_train, manual_split=manual_split)
+    print(f"  Dataset ({cfg.name}): {len(problems)} problems")
 
     prompts, answers, qids = [], [], []
-    for i, item in enumerate(data):
+    for i, prob in enumerate(problems):
         prompts.append([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": item[question_field]},
+            {"role": "system", "content": cfg.system_prompt},
+            {"role": "user", "content": prob["problem"]},
         ])
-        answers.append(item["answer"])
+        answers.append(prob["answer"])
         qids.append(i)
 
     from datasets import Dataset
@@ -190,6 +185,7 @@ def main():
         num_teacher_per_prompt=args.num_teacher_per_prompt,
         ref_sync_steps=args.ref_sync_steps,
         dataset_type=args.dataset_type,
+        reward_func=cfg.reward_func,
     )
 
     print(f"Method A (Unified Mixture GRPO)")

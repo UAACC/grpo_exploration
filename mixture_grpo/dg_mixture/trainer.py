@@ -1,48 +1,54 @@
-"""Method B: Weighted Mixture GRPO Trainer.
+"""DG-Mixture GRPO Trainer.
 
-Extends TRL's GRPOTrainer to combine online student rollouts and offline
-teacher rollouts with separate loss terms weighted by lambda.
+Combines online student rollouts (standard GRPO loss) with offline teacher
+rollouts weighted by DG-offline's sigmoid gate on delight = advantage * surprisal.
 
-Key design: teacher advantage uses the student's online group statistics
-as baseline, linking teacher signal to student's current ability.
+Key differences from the Weighted Mixture trainer (`method_B_weighted/`):
+  - Teacher advantage uses TEACHER-ONLY group statistics (matches DG-offline's
+    calibration of the gate's eta parameter), NOT the student's online stats.
+  - Teacher loss is gated REINFORCE: each completion's advantage is multiplied
+    by sigma(advantage * mean_surprisal / eta) where surprisal is computed
+    under the learner's CURRENT policy (no behavior logprobs needed).
+  - IS ratio is neutralized by setting old_per_token_logps = current_logps
+    at generation time, so the PPO clip becomes a no-op and the effective
+    teacher loss is gated REINFORCE: -gate * advantage * log pi_current.
 
-L_total = L_online + lambda * L_offline + beta * L_KL
+L_total = L_online (PPO clipped + KL on student)
+        + lambda * L_dg_teacher (gated REINFORCE, no KL on teacher)
+
+Reference: Osband (2026), arXiv:2603.20521 (DG paper).
+DG-offline implementation: ../../DG-offline/trainer.py
 """
 
 import copy
 from typing import Any, Union
 
 import torch
+import torch.nn.functional as F
 from accelerate.utils import gather_object, is_peft_model
 from trl import GRPOTrainer
 from trl.data_utils import is_conversational, maybe_apply_chat_template
 from trl.trainer.utils import pad
 
 # Reward function is passed via constructor (resolved from shared/datasets_registry.py)
-# No more hardcoded dataset-specific imports
 
 
-class WeightedMixtureGRPOTrainer(GRPOTrainer):
-    """GRPOTrainer with separate online/offline losses weighted by lambda."""
+class DGMixtureGRPOTrainer(GRPOTrainer):
+    """GRPOTrainer with online student loss + DG-gated offline teacher loss."""
 
-    def __init__(self, *args, teacher_data: dict, offline_weight: float = 0.3,
-                 num_teacher_per_prompt: int = 5, ref_sync_steps: int = 0,
-                 dataset_type: str = "gsm8k", reward_func=None, **kwargs):
-        """
-        Args:
-            teacher_data: dict keyed by question_id with teacher rollouts.
-            offline_weight: lambda — weight for the offline teacher loss.
-            num_teacher_per_prompt: number of teacher completions per prompt.
-            ref_sync_steps: sync reference LoRA adapter every N steps. 0 = never.
-            dataset_type: "gsm8k" or "math" — determines reward computation.
-        """
+    def __init__(self, *args, teacher_data: dict, dg_offline_weight: float = 0.3,
+                 dg_temperature: float = 0.5, dg_gating: str = "completion",
+                 num_teacher_per_prompt: int = 4, ref_sync_steps: int = 0,
+                 dataset_type: str = "math", reward_func=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._teacher_data = teacher_data
-        self._offline_weight = offline_weight
+        self._reward_func = reward_func
+        self._dg_offline_weight = dg_offline_weight
+        self._dg_temperature = dg_temperature
+        self._dg_gating = dg_gating
         self._num_teacher = num_teacher_per_prompt
         self._ref_sync_steps = ref_sync_steps
         self._dataset_type = dataset_type
-        self._reward_func = reward_func
         self._ref_adapter_state = None
         self._steps_since_ref_sync = 0
 
@@ -50,7 +56,7 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
             self._sync_ref_adapter()
 
     # ------------------------------------------------------------------
-    # Reference adapter sync
+    # Reference adapter sync (verbatim from Method B)
     # ------------------------------------------------------------------
     def _sync_ref_adapter(self):
         unwrapped = self.accelerator.unwrap_model(self.model)
@@ -91,104 +97,68 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
             return ref_per_token_logps
 
     # ------------------------------------------------------------------
-    # Override _compute_loss to add offline teacher loss
+    # Override _compute_loss to add DG teacher loss
     # ------------------------------------------------------------------
     def _compute_loss(self, model, inputs):
-        """Compute online loss (via super) + offline teacher loss."""
-        # Parent _compute_loss returns a scalar loss tensor (not a tuple)
+        """L = L_online (super) + lambda * L_dg_teacher."""
+        # Online student loss (PPO clipped + KL vs ref) — standard TRL path
         loss = super()._compute_loss(model, inputs)
 
-        # Add offline teacher loss if teacher data is present in inputs
         mode = "train" if self.model.training else "eval"
         if "teacher_completion_ids" in inputs:
-            teacher_loss = self._compute_offline_loss(
+            dg_loss = self._compute_dg_teacher_loss(
                 model,
                 inputs["teacher_prompt_ids"], inputs["teacher_prompt_mask"],
                 inputs["teacher_completion_ids"], inputs["teacher_completion_mask"],
                 inputs["teacher_old_per_token_logps"], inputs["teacher_advantages"],
             )
-            loss = loss + self._offline_weight * teacher_loss
-            self._metrics[mode]["offline_loss"].append(teacher_loss.detach().item())
+            loss = loss + self._dg_offline_weight * dg_loss
+            self._metrics[mode]["dg_teacher_loss"].append(dg_loss.detach().item())
 
         return loss
 
-    def _compute_offline_loss(self, model, prompt_ids, prompt_mask,
-                              completion_ids, completion_mask,
-                              old_per_token_logps, advantages):
-        """Compute clipped GRPO loss for teacher completions (per-token clipping)."""
+    def _compute_dg_teacher_loss(self, model, prompt_ids, prompt_mask,
+                                  completion_ids, completion_mask,
+                                  old_per_token_logps, gated_advantages):
+        """DG-gated teacher loss.
+
+        The advantages passed in are ALREADY pre-multiplied by the DG gate
+        (gate is computed at generation time in _generate_and_score_completions).
+        Since old_per_token_logps == current_logps at the start of each outer
+        step, the PPO ratio ~= 1 and the clipped surrogate reduces to:
+
+            loss = -gated_advantage * log pi_current
+
+        which is gated REINFORCE — exactly DG's update rule.
+        """
         mode = "train" if self.model.training else "eval"
         prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)
 
-        # Current policy logprobs on teacher completions
+        # Current policy logprobs on teacher completions (gradient flows here)
         per_token_logps, _ = self._get_per_token_logps_and_entropies(
             model, prompt_completion_ids, attention_mask, logits_to_keep,
         )
 
-        # Per-token importance ratio (matching TRL's GRPO implementation)
-        log_ratio = per_token_logps - old_per_token_logps  # (B, T)
-        ratio = torch.exp(log_ratio)                        # per-token exp
-
-        # Per-token clipped surrogate
+        # PPO-style surrogate (with ratio ~ 1, clip is a no-op for the first
+        # microbatch; engages only if multiple inner PPO epochs drift the model)
+        log_ratio = per_token_logps - old_per_token_logps
+        ratio = torch.exp(log_ratio)
         eps = 0.2
         clipped_ratio = torch.clamp(ratio, 1.0 - eps, 1.0 + eps)
-        per_token_loss1 = ratio * advantages.unsqueeze(1)
-        per_token_loss2 = clipped_ratio * advantages.unsqueeze(1)
+        per_token_loss1 = ratio * gated_advantages.unsqueeze(1)
+        per_token_loss2 = clipped_ratio * gated_advantages.unsqueeze(1)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
         # Average over tokens, then over batch
-        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1.0)).mean()
-
-        # ── Offline-specific diagnostics ──────────────────────────────
-        with torch.no_grad():
-            completion_token_count = completion_mask.sum().clamp(min=1.0)
-
-            # IS ratio statistics
-            valid_ratios = ratio[completion_mask.bool()]
-            self._metrics[mode]["offline/is_ratio_mean"].append(valid_ratios.mean().item())
-            self._metrics[mode]["offline/is_ratio_std"].append(valid_ratios.std().item())
-            self._metrics[mode]["offline/is_ratio_median"].append(valid_ratios.median().item())
-
-            # Clip fraction: how many tokens have ratio outside [1-eps, 1+eps]
-            is_clipped = ((ratio < 1.0 - eps) | (ratio > 1.0 + eps)) & completion_mask.bool()
-            clip_frac = is_clipped.float().sum() / completion_token_count
-            self._metrics[mode]["offline/clip_fraction"].append(clip_frac.item())
-
-            # Log-ratio stats (more numerically stable view)
-            valid_log_ratios = log_ratio[completion_mask.bool()]
-            self._metrics[mode]["offline/log_ratio_mean"].append(valid_log_ratios.mean().item())
-            self._metrics[mode]["offline/log_ratio_std"].append(valid_log_ratios.std().item())
-
-            # Ratio percentiles and clip direction breakdown
-            self._metrics[mode]["offline/ratio_p5"].append(valid_ratios.quantile(0.05).item())
-            self._metrics[mode]["offline/ratio_p95"].append(valid_ratios.quantile(0.95).item())
-            clip_low = ((ratio < 1.0 - eps) & completion_mask.bool()).float().sum() / completion_token_count
-            clip_high = ((ratio > 1.0 + eps) & completion_mask.bool()).float().sum() / completion_token_count
-            self._metrics[mode]["offline/clip_fraction_low"].append(clip_low.item())
-            self._metrics[mode]["offline/clip_fraction_high"].append(clip_high.item())
-
-            # Per-completion clip fraction (mean across completions)
-            per_comp_clipped = ((ratio < 1.0 - eps) | (ratio > 1.0 + eps)) & completion_mask.bool()
-            per_comp_clip_frac = per_comp_clipped.float().sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1.0)
-            self._metrics[mode]["offline/per_comp_clip_frac_mean"].append(per_comp_clip_frac.mean().item())
-            self._metrics[mode]["offline/per_comp_clip_frac_max"].append(per_comp_clip_frac.max().item())
-
-            # Teacher advantage statistics
-            self._metrics[mode]["offline/advantage_mean"].append(advantages.mean().item())
-            self._metrics[mode]["offline/advantage_std"].append(advantages.std().item())
-            frac_zero_adv = (advantages.abs() < 1e-4).float().mean()
-            self._metrics[mode]["offline/frac_zero_advantage"].append(frac_zero_adv.item())
-
-            # Combined effective signal: (1 - H1) * (1 - H2)
-            # H1 = frac_zero_advantage, H2 = clip_fraction
-            effective = (1.0 - frac_zero_adv.item()) * (1.0 - clip_frac.item())
-            self._metrics[mode]["offline/effective_signal"].append(effective)
+        loss = ((per_token_loss * completion_mask).sum(dim=1)
+                / completion_mask.sum(dim=1).clamp(min=1.0)).mean()
 
         return loss
 
     # ------------------------------------------------------------------
-    # Main override: generate student rollouts + prepare teacher batch
+    # Main override: generate student rollouts + prepare DG-gated teacher batch
     # ------------------------------------------------------------------
     def _generate_and_score_completions(
         self, inputs: list[dict[str, Union[torch.Tensor, Any]]]
@@ -216,8 +186,6 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
         prompt_mask = prompt_inputs["attention_mask"]
 
         # ---- 2. Generate student completions (ONLINE) -------------------
-        # TRL's dataloader already duplicates each prompt num_generations times.
-        # We generate 1 completion per row (matching TRL's design).
         num_gen = self.num_generations
         batch_size = len(inputs)
         num_unique = batch_size // num_gen
@@ -250,18 +218,16 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
         question_ids = [x.get("question_id") for x in inputs]
         answers = [x.get("answer") for x in inputs]
         unique_qids = question_ids[::num_gen]
-        unique_answers = answers[::num_gen]
 
         # Student rewards (using reward function from dataset registry)
         student_rewards = []
         for text, answer in zip(student_texts, answers):
             student_rewards.append(self._reward_func(text, answer))
 
-        # ---- 3. Compute ONLINE advantages (student only) ----------------
+        # ---- 3. Compute ONLINE advantages (student-only group stats) ----
         online_advantages = []
         stu_idx = 0
-        online_stats = []  # store (mu, std) per prompt for teacher advantage
-        n_zero_std_groups = 0  # count groups where all student rewards are identical
+        n_zero_std_groups = 0
         n_all_wrong_groups = 0
         n_all_correct_groups = 0
         for q in range(num_unique):
@@ -272,7 +238,6 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
             mean_r = sum(group_rewards) / len(group_rewards)
             std_r = (sum((r - mean_r) ** 2 for r in group_rewards) / len(group_rewards)) ** 0.5
             eps = 1e-4
-            online_stats.append((mean_r, std_r))
 
             if std_r <= eps:
                 n_zero_std_groups += 1
@@ -288,18 +253,15 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
 
         advantages = torch.tensor(online_advantages, dtype=torch.float32, device=device)
 
-        # Log reward diversity metrics (hypothesis 1)
         self._metrics[mode]["frac_reward_zero_std"].append(n_zero_std_groups / max(num_unique, 1))
         self._metrics[mode]["frac_all_wrong"].append(n_all_wrong_groups / max(num_unique, 1))
         self._metrics[mode]["frac_all_correct"].append(n_all_correct_groups / max(num_unique, 1))
 
-        # ---- 4. Prepare teacher batch (OFFLINE) -------------------------
-        # Teacher advantage uses student's online stats as baseline.
-        # Build teacher tensors with same batch_size as student (num_gen per prompt)
-        # so TRL can split them in sync.
+        # ---- 4. Prepare teacher batch (OFFLINE, DG-gated) ---------------
+        # Use TEACHER-ONLY group advantages from teacher_data (pre-computed at
+        # load time via offline_grpo.data.compute_rewards_and_advantages).
         teacher_completion_id_lists = []
-        teacher_logprob_lists = []
-        teacher_advantages = []
+        teacher_raw_advantages = []
         teacher_prompt_ids_list = []
         teacher_prompt_mask_list = []
 
@@ -309,29 +271,107 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
             if tdata is None:
                 continue
 
-            mean_r, std_r = online_stats[q]
-            eps = 1e-4
-
-            # Use up to num_teacher rollouts per prompt
             n_tea = min(self._num_teacher, len(tdata["runs"]))
             for k in range(n_tea):
                 run = tdata["runs"][k]
-                tea_reward = run["reward"]
-                tea_adv = (tea_reward - mean_r) / (std_r + eps) if std_r > eps else 0.0
-
                 teacher_completion_id_lists.append(run["completion_ids"])
-                teacher_logprob_lists.append(run["behavior_logprobs"])
-                teacher_advantages.append(tea_adv)
+                teacher_raw_advantages.append(run["advantage"])
                 teacher_prompt_ids_list.append(prompt_ids[q * num_gen])
                 teacher_prompt_mask_list.append(prompt_mask[q * num_gen])
 
-        # ---- 5. Handle student completion padding -----------------------
+        # ---- 5. Build padded teacher tensors and apply DG gate ----------
+        teacher_output_keys = {}
+        if teacher_completion_id_lists:
+            max_tea_len = max(len(c) for c in teacher_completion_id_lists)
+            if self.max_completion_length is not None:
+                max_tea_len = min(max_tea_len, self.max_completion_length)
+
+            tea_cid_tensors = []
+            tea_mask_tensors = []
+            for cids in teacher_completion_id_lists:
+                cids = cids[:max_tea_len]
+                seq_len = len(cids)
+
+                cid_t = torch.tensor(cids, dtype=torch.long, device=device)
+                mask_t = torch.ones(seq_len, dtype=torch.int, device=device)
+
+                pad_len = max_tea_len - seq_len
+                if pad_len > 0:
+                    cid_t = torch.cat([cid_t, torch.full((pad_len,), self.pad_token_id, dtype=torch.long, device=device)])
+                    mask_t = torch.cat([mask_t, torch.zeros(pad_len, dtype=torch.int, device=device)])
+
+                tea_cid_tensors.append(cid_t)
+                tea_mask_tensors.append(mask_t)
+
+            teacher_completion_ids_t = torch.stack(tea_cid_tensors)
+            teacher_completion_mask_t = torch.stack(tea_mask_tensors)
+            teacher_prompt_ids_t = torch.stack(teacher_prompt_ids_list)
+            teacher_prompt_mask_t = torch.stack(teacher_prompt_mask_list)
+            teacher_raw_advantages_t = torch.tensor(
+                teacher_raw_advantages, dtype=torch.float32, device=device
+            )
+
+            # Compute current policy logprobs on teacher completions for the DG gate
+            tea_full_ids = torch.cat([teacher_prompt_ids_t, teacher_completion_ids_t], dim=1)
+            tea_attention_mask = torch.cat([teacher_prompt_mask_t, teacher_completion_mask_t], dim=1)
+            tea_logits_to_keep = teacher_completion_ids_t.size(1)
+
+            with torch.no_grad():
+                current_teacher_logps, _ = self._get_per_token_logps_and_entropies(
+                    self.model, tea_full_ids, tea_attention_mask, tea_logits_to_keep,
+                )
+
+            # Per-token surprisal under current student policy
+            surprisal = -current_teacher_logps  # (B_tea, T)
+
+            if self._dg_gating == "completion":
+                lengths = teacher_completion_mask_t.sum(dim=1).clamp(min=1).float()
+                completion_surprisal = (surprisal * teacher_completion_mask_t).sum(dim=1) / lengths
+                delight = teacher_raw_advantages_t * completion_surprisal
+                gate = torch.sigmoid(delight / self._dg_temperature)
+                gated_teacher_advantages = gate * teacher_raw_advantages_t
+            elif self._dg_gating == "token":
+                per_token_delight = teacher_raw_advantages_t.unsqueeze(1) * surprisal
+                per_token_gate = torch.sigmoid(per_token_delight / self._dg_temperature)
+                mean_gate = ((per_token_gate * teacher_completion_mask_t).sum(dim=1)
+                             / teacher_completion_mask_t.sum(dim=1).clamp(min=1))
+                gate = mean_gate
+                completion_surprisal = (surprisal * teacher_completion_mask_t).sum(dim=1) / teacher_completion_mask_t.sum(dim=1).clamp(min=1).float()
+                delight = teacher_raw_advantages_t * completion_surprisal
+                gated_teacher_advantages = mean_gate * teacher_raw_advantages_t
+            else:
+                raise ValueError(f"Unknown dg_gating mode: {self._dg_gating}")
+
+            # Neutralize IS ratio: setting old_logps = current_logps makes
+            # the PPO ratio ~ 1 at the start of each step, so the clipped
+            # surrogate reduces to gated REINFORCE.
+            teacher_old_logps_t = current_teacher_logps.detach()
+
+            # DG-specific metrics (matching DG-offline naming)
+            self._metrics[mode]["dg/gate_mean"].append(gate.mean().item())
+            self._metrics[mode]["dg/gate_min"].append(gate.min().item())
+            self._metrics[mode]["dg/gate_max"].append(gate.max().item())
+            self._metrics[mode]["dg/delight_mean"].append(delight.mean().item())
+            self._metrics[mode]["dg/surprisal_mean"].append(completion_surprisal.mean().item())
+            self._metrics[mode]["dg/teacher_advantage_mean"].append(teacher_raw_advantages_t.mean().item())
+            self._metrics[mode]["dg/teacher_advantage_std"].append(teacher_raw_advantages_t.std().item())
+
+            teacher_output_keys = {
+                "teacher_prompt_ids": teacher_prompt_ids_t,
+                "teacher_prompt_mask": teacher_prompt_mask_t,
+                "teacher_completion_ids": teacher_completion_ids_t,
+                "teacher_completion_mask": teacher_completion_mask_t,
+                "teacher_old_per_token_logps": teacher_old_logps_t,
+                "teacher_advantages": gated_teacher_advantages,
+            }
+
+        # ---- 6. Handle student completion padding -----------------------
         if self.max_completion_length is not None and student_completion_ids.size(1) > self.max_completion_length:
             student_completion_ids = student_completion_ids[:, :self.max_completion_length]
             student_comp_mask = student_comp_mask[:, :self.max_completion_length]
             student_old_logps = student_old_logps[:, :self.max_completion_length]
 
-        # ---- 6. Compute ref logprobs ------------------------------------
+        # ---- 7. Compute ref logprobs (student only, for KL) ------------
         ref_per_token_logps = None
         if self.beta != 0.0:
             prompt_completion_ids = torch.cat([prompt_ids, student_completion_ids], dim=1)
@@ -353,7 +393,7 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
                 if self._steps_since_ref_sync >= self._ref_sync_steps:
                     self._sync_ref_adapter()
 
-        # ---- 7. Decode completions for logging --------------------------
+        # ---- 8. Decode for logging --------------------------------------
         completions_text = self.processing_class.batch_decode(
             student_completion_ids, skip_special_tokens=True
         )
@@ -366,7 +406,7 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
         else:
             completions = completions_text
 
-        # ---- 8. Log metrics ---------------------------------------------
+        # ---- 9. Log metrics ---------------------------------------------
         completion_lengths = student_comp_mask.sum(1)
         if mode == "train":
             full_mask = torch.cat([prompt_mask, student_comp_mask], dim=1)
@@ -379,21 +419,12 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
         stu_rewards_t = torch.tensor(student_rewards, device=device)
         self._metrics[mode]["reward"].append(stu_rewards_t.mean().item())
         self._metrics[mode]["reward_std"].append(stu_rewards_t.std().item())
-        if teacher_advantages:
-            self._metrics[mode]["offline_advantage"].append(
-                sum(teacher_advantages) / len(teacher_advantages)
-            )
 
         self._logs["prompt"].extend(gather_object(prompts_text))
         self._logs["completion"].extend(gather_object(completions_text))
         self._logs["advantages"].extend(advantages.tolist())
 
-        # ---- 9. Build output dict ---------------------------------------
-        # Include both student (online) and teacher (offline) data.
-        # Teacher tensors use "teacher_" prefix so TRL splits them in sync
-        # with student data during gradient accumulation.
-        completion_lengths = student_comp_mask.sum(dim=1)
-        agg_completion_lengths = self.accelerator.gather(completion_lengths)
+        # ---- 10. Build output dict --------------------------------------
         num_items_in_batch = agg_completion_lengths.sum()
 
         output = {
@@ -408,40 +439,7 @@ class WeightedMixtureGRPOTrainer(GRPOTrainer):
         if ref_per_token_logps is not None:
             output["ref_per_token_logps"] = ref_per_token_logps
 
-        # Add teacher data to output dict for auto-splitting
-        if teacher_completion_id_lists:
-            max_tea_len = max(len(c) for c in teacher_completion_id_lists)
-            if self.max_completion_length is not None:
-                max_tea_len = min(max_tea_len, self.max_completion_length)
-
-            tea_cid_tensors = []
-            tea_mask_tensors = []
-            tea_logp_tensors = []
-            for cids, blps in zip(teacher_completion_id_lists, teacher_logprob_lists):
-                cids = cids[:max_tea_len]
-                blps = blps[:max_tea_len]
-                seq_len = len(cids)
-                blps = [lp if lp is not None else 0.0 for lp in blps]
-
-                cid_t = torch.tensor(cids, dtype=torch.long, device=device)
-                mask_t = torch.ones(seq_len, dtype=torch.int, device=device)
-                lp_t = torch.tensor(blps, dtype=torch.float32, device=device)
-
-                pad_len = max_tea_len - seq_len
-                if pad_len > 0:
-                    cid_t = torch.cat([cid_t, torch.full((pad_len,), self.pad_token_id, dtype=torch.long, device=device)])
-                    mask_t = torch.cat([mask_t, torch.zeros(pad_len, dtype=torch.int, device=device)])
-                    lp_t = torch.cat([lp_t, torch.zeros(pad_len, dtype=torch.float32, device=device)])
-
-                tea_cid_tensors.append(cid_t)
-                tea_mask_tensors.append(mask_t)
-                tea_logp_tensors.append(lp_t)
-
-            output["teacher_prompt_ids"] = torch.stack(teacher_prompt_ids_list)
-            output["teacher_prompt_mask"] = torch.stack(teacher_prompt_mask_list)
-            output["teacher_completion_ids"] = torch.stack(tea_cid_tensors)
-            output["teacher_completion_mask"] = torch.stack(tea_mask_tensors)
-            output["teacher_old_per_token_logps"] = torch.stack(tea_logp_tensors)
-            output["teacher_advantages"] = torch.tensor(teacher_advantages, dtype=torch.float32, device=device)
+        # Teacher data goes through TRL's split mechanism (must be in output dict)
+        output.update(teacher_output_keys)
 
         return output

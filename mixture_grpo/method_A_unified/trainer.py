@@ -18,27 +18,21 @@ from trl import GRPOTrainer
 from trl.data_utils import is_conversational, maybe_apply_chat_template
 from trl.trainer.utils import pad
 
-from configs import extract_gsm8k_answer, extract_boxed_answer
-from data import compute_gsm8k_correctness, compute_math_correctness
+# Reward function is passed via constructor (resolved from shared/datasets_registry.py)
 
 
 class UnifiedMixtureGRPOTrainer(GRPOTrainer):
     """GRPOTrainer that unifies online student rollouts with offline teacher rollouts."""
 
     def __init__(self, *args, teacher_data: dict, num_teacher_per_prompt: int = 1,
-                 ref_sync_steps: int = 0, dataset_type: str = "gsm8k", **kwargs):
-        """
-        Args:
-            teacher_data: dict keyed by question_id with teacher rollouts.
-            num_teacher_per_prompt: number of teacher completions to include per prompt.
-            ref_sync_steps: sync reference LoRA adapter every N steps. 0 = never.
-            dataset_type: "gsm8k" or "math" — determines reward computation.
-        """
+                 ref_sync_steps: int = 0, dataset_type: str = "gsm8k",
+                 reward_func=None, **kwargs):
         super().__init__(*args, **kwargs)
         self._teacher_data = teacher_data
         self._num_teacher = num_teacher_per_prompt
         self._ref_sync_steps = ref_sync_steps
         self._dataset_type = dataset_type
+        self._reward_func = reward_func
         self._ref_adapter_state = None
         self._steps_since_ref_sync = 0
 
@@ -264,15 +258,10 @@ class UnifiedMixtureGRPOTrainer(GRPOTrainer):
         question_ids = [x.get("question_id") for x in inputs]
         answers = [x.get("answer") for x in inputs]
 
+        # Student rewards (using reward function from dataset registry)
         student_rewards = []
         for text, answer in zip(student_texts, answers):
-            if self._dataset_type == "math":
-                extracted = extract_boxed_answer(text)
-                reward = compute_math_correctness(extracted, answer)
-            else:
-                extracted = extract_gsm8k_answer(text)
-                reward = compute_gsm8k_correctness(extracted, answer)
-            student_rewards.append(reward)
+            student_rewards.append(self._reward_func(text, answer))
 
         # ---- 3. Retrieve teacher completions (OFFLINE) ------------------
         # For each unique prompt, get teacher completions

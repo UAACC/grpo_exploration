@@ -116,14 +116,44 @@ class BCCollator:
         }
 
 
+def _compute_reward_math(extracted: str | None, gt: str) -> float:
+    """MATH reward via math_verify. Returns 2.0 for correct, 0.0 otherwise."""
+    from math_verify import parse, verify
+    try:
+        return 2.0 if verify(parse(extracted), parse(gt)) is True else 0.0
+    except Exception:
+        return 0.0
+
+
+def _compute_reward_gsm8k(extracted: str | None, gt: str) -> float:
+    """GSM8K reward via numeric comparison. Returns 1.0 for correct, 0.0 otherwise."""
+    # Import from mixture_grpo/configs.py to get extract_gsm8k_answer helper
+    import sys as _sys
+    import os as _os
+    _mg = _os.path.join(_os.path.dirname(__file__), "..", "mixture_grpo")
+    if _mg not in _sys.path:
+        _sys.path.insert(0, _mg)
+    from configs import extract_gsm8k_answer
+
+    if extracted is None:
+        return 0.0
+    gold = extract_gsm8k_answer(gt)
+    if gold is None:
+        return 0.0
+    try:
+        return 1.0 if float(extracted) == float(gold) else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]:
     """Load rollout JSONL into a flat list of per-completion records.
 
-    Reuses logic from offline_grpo/data.py but also computes reward inline
-    so we can optionally filter correct-only.
+    Auto-detects dataset type from the `dataset_type` field in the JSONL
+    (falls back to "math" if missing). Uses math_verify for MATH and numeric
+    comparison for GSM8K.
     """
     from configs import extract_boxed_answer
-    from math_verify import parse, verify
 
     records = []
     truncated = 0
@@ -135,6 +165,8 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
             item = json.loads(line)
             qid = item["question_id"]
             gt = item["ground_truth_answer"]
+            dataset_type = item.get("dataset_type", "math")
+
             for run in item["runs"]:
                 cids = run["completion_ids"]
 
@@ -146,14 +178,21 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
                             truncated += 1
                             break
 
-                # Compute reward for optional filtering
+                # Compute reward using the appropriate checker for this dataset
                 extracted = run.get("extracted_answer") or run.get("boxed_answer")
-                if extracted is None:
-                    extracted = extract_boxed_answer(run["response"])
-                try:
-                    reward = 2.0 if verify(parse(extracted), parse(gt)) is True else 0.0
-                except Exception:
-                    reward = 0.0
+                if dataset_type in ("gsm8k", "svamp", "asdiv"):
+                    # Try stored extracted_answer first, then try boxed format
+                    # (the 7B Math teacher outputs \boxed{} even on numeric tasks)
+                    reward = _compute_reward_gsm8k(extracted, gt)
+                    if reward == 0.0:
+                        boxed = extract_boxed_answer(run["response"])
+                        if boxed is not None:
+                            reward = _compute_reward_gsm8k(boxed, gt)
+                else:
+                    # MATH (default): extract_boxed_answer as fallback, then math_verify
+                    if extracted is None:
+                        extracted = extract_boxed_answer(run["response"])
+                    reward = _compute_reward_math(extracted, gt)
 
                 records.append({
                     "question_id": qid,
