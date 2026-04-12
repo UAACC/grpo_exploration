@@ -285,11 +285,11 @@ The student is Qwen2.5-0.5B-Instruct and the teacher is Qwen2.5-Math-7B-Instruct
 
 - **Greedy (temp=0.0)**: `mixture_grpo/evaluate.py` at `--temperature 0.0`, 5 runs averaged. This is the deployable deterministic accuracy.
 - **pass@1 (temp=0.6)**: first sample of `bc/eval_best_of_n.py` at `--temperature 0.6`, `--n_samples 16`. Same script as pass@16, different metric.
-- **pass@16 (temp=0.6, oracle)**: fraction of problems where at least one of 16 samples is correct. Oracle upper bound (requires ground truth to pick the correct sample), NOT deployable on its own. Useful as a diagnostic for what's in the student's distribution.
+- **pass@16 (temp=0.6)**: fraction of problems where at least one of 16 samples is correct. Possible upper bound (requires ground truth to pick the correct sample), NOT deployable on its own. Useful as a diagnostic for what's in the student's distribution.
 
 ### MATH (500 problems)
 
-| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (oracle) |
+| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (temp=0.6) |
 |--------|-------------------|-------------------|------------------|
 | Baseline (untrained 0.5B) | 27.16% | 26.80% | 61.40% |
 | BC (all completions) | 27.40% | 24.20% | 61.00% |
@@ -306,7 +306,7 @@ The student is Qwen2.5-0.5B-Instruct and the teacher is Qwen2.5-Math-7B-Instruct
 
 ### GSM8K (1319 problems)
 
-| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (oracle) |
+| Method | Greedy (temp=0.0) | pass@1 (temp=0.6) | pass@16 (temp=0.6) |
 |--------|-------------------|-------------------|------------------|
 | Baseline (untrained 0.5B) | 48.16% | 43.59% | 86.13% |
 | BC (all completions) | 49.67% | 46.55% | 83.55% |
@@ -359,7 +359,7 @@ On GSM8K, Mixture B wins greedy (51.11%) and DG-offline η=1.0 wins pass@16 (85.
 
 Sampling 16 completions instead of taking the greedy output nearly triples baseline accuracy on MATH (27.16% → 61.40%) and closes most of the gap to the teacher on GSM8K (48.16% → 86.13%, vs teacher's 95.74%). This happens without any training.
 
-pass@16 is an oracle upper bound (it assumes you can pick the correct sample), so the raw number isn't deployable. But it tells us something important about the shape of the student's distribution: the correct reasoning path usually exists in the top-K samples, it just isn't the greedy argmax. The bottleneck for a greedy student is not knowledge, it's selection.
+pass@16 is an possible upper bound (it assumes you can pick the correct sample), so the raw number isn't deployable. But it tells us something important about the shape of the student's distribution: the correct reasoning path usually exists in the top-K samples, it just isn't the greedy argmax. The bottleneck for a greedy student is not knowledge, it's selection.
 
 This reframes what offline methods should be doing: rather than trying to teach the student new strategies, they should be shifting the student's greedy preference toward strategies it already considers reasonable. Online GRPO does this naturally (by reinforcing the student's own successful samples); most offline methods don't.
 
