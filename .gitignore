@@ -25,6 +25,8 @@ docs/*
 !online_grpo/**
 !DG-offline/**
 !bc/**
+!shared/
+!shared/**
 
 # But exclude runtime artifacts everywhere
 **/__pycache__/
