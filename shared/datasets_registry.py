@@ -66,18 +66,18 @@ def extract_numeric_answer(text: str) -> str | None:
     if "####" in text:
         after = text.split("####")[-1].strip()
         after = after.replace(",", "").strip()
-        match = re.search(r"-?[\d.]+", after)
+        match = re.search(r"-?\d+\.?\d*", after)
         if match:
             return match.group()
     # Try \boxed{}
     boxed = extract_boxed_answer(text)
     if boxed is not None:
         boxed = boxed.replace(",", "").strip()
-        match = re.search(r"-?[\d.]+", boxed)
+        match = re.search(r"-?\d+\.?\d*", boxed)
         if match:
             return match.group()
-    # Fallback: last number in the text
-    numbers = re.findall(r"-?[\d.]+", text)
+    # Fallback: last number in the text (must contain at least one digit)
+    numbers = re.findall(r"-?\d+\.?\d*", text)
     return numbers[-1] if numbers else None
 
 
@@ -204,8 +204,8 @@ _register(DatasetConfig(
     extract_answer=extract_numeric_answer,
     check_answer=check_numeric,
     reward_func=reward_numeric,
-    max_tokens=512,
-    max_model_len=1024,
+    max_tokens=1024,
+    max_model_len=2048,
     num_test=300,
     difficulty="easy",
     build_question=_svamp_build_question,
@@ -234,8 +234,8 @@ _register(DatasetConfig(
     extract_answer=extract_numeric_answer,
     check_answer=check_numeric,
     reward_func=reward_numeric,
-    max_tokens=512,
-    max_model_len=1024,
+    max_tokens=1024,
+    max_model_len=2048,
     num_test=461,              # 2305 * 0.2 ≈ 461
     difficulty="easy-medium",
     build_question=_asdiv_build_question,

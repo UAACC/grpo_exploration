@@ -45,19 +45,19 @@ class MetricsFileCallback(TrainerCallback):
             f.write(json.dumps(record) + "\n")
 
 
-# Import local trainer FIRST (before adding offline_grpo to sys.path, which
-# also has a trainer.py that would shadow ours).
+# Put mixture_grpo/ on sys.path BEFORE importing dg_mixture.* so the package
+# resolves when launched with `accelerate launch dg_mixture/train.py` (where
+# the cwd is mixture_grpo/ but nothing is on PYTHONPATH yet).
+_MIXTURE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _MIXTURE_DIR)
 from dg_mixture.trainer import DGMixtureGRPOTrainer
 
-# Add parent dir + shared for modules
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PROJECT_ROOT = os.path.dirname(_MIXTURE_DIR)
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "shared"))
 from configs import DEFAULT_TARGET_MODEL, DEFAULT_LORA_CONFIG
 from datasets_registry import get_dataset_config, load_eval_data
 
 # Add offline_grpo for shared rollout loading + advantage computation
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "offline_grpo"))
 import importlib.util
 _spec = importlib.util.spec_from_file_location(

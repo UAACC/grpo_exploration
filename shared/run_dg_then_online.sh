@@ -8,7 +8,7 @@
 #   DATASET=gsm8k sbatch --job-name=dg-then-online-gsm8k run_dg_then_online.sh
 #
 #SBATCH --account=aip-szepesva
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --gpus-per-node=l40s:4
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=256G
@@ -18,6 +18,7 @@
 set -euo pipefail
 
 DATASET="${DATASET:?Set DATASET (math or gsm8k)}"
+RESUME="${RESUME:-0}"
 SCRATCH="/scratch/mrli"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng"
 
@@ -67,6 +68,12 @@ echo "  Output: ${OUTPUT_DIR}"
 
 cd "${WORK_DIR}/online_grpo"
 
+RESUME_ARG=""
+if [ "${RESUME}" = "1" ]; then
+    RESUME_ARG="--resume_from_checkpoint latest"
+    echo "  Resuming from latest checkpoint in ${OUTPUT_DIR}"
+fi
+
 accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
     train.py \
     --model "${START_MODEL}" \
@@ -84,6 +91,7 @@ accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
     --lora_r 32 \
     --lora_alpha 32 \
     --save_steps 200 \
-    --logging_steps 10
+    --logging_steps 10 \
+    ${RESUME_ARG}
 
 echo "=== Training complete ==="

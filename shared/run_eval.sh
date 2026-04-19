@@ -39,6 +39,7 @@ RUNS="${RUNS:-5}"
 N_SAMPLES="${N_SAMPLES:-16}"
 TEMP="${TEMP:-0.6}"
 MAX_PROBS="${MAX_PROBS:-}"
+SEED="${SEED:-42}"
 
 SCRATCH="${SCRATCH:-/scratch/mrli}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng"
@@ -56,7 +57,7 @@ case "${DATASET}" in
     math)   export HF_DATASETS_CACHE="${SCRATCH}/datasets/MATH" ;;
     gsm8k)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/GSM8K" ;;
     svamp)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/SVAMP" ;;
-    aime)   export HF_DATASETS_CACHE="${SCRATCH}/datasets/AIME" ;;
+    asdiv)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/ASDIV" ;;
     *)      export HF_DATASETS_CACHE="${SCRATCH}/datasets/${DATASET}" ;;
 esac
 
@@ -71,13 +72,19 @@ CMD="python shared/eval_unified.py \
     --mode ${MODE} \
     --runs ${RUNS} \
     --n_samples ${N_SAMPLES} \
-    --temperature ${TEMP}"
+    --temperature ${TEMP} \
+    --seed ${SEED}"
 
 if [ "${MERGE}" = "1" ] && [ -n "${BASE}" ]; then
     CMD="${CMD} --merge_lora --base_model ${BASE}"
     if [ -n "${MERGED_DIR}" ]; then
         CMD="${CMD} --merged_output ${MERGED_DIR}"
     fi
+fi
+
+# ASDiv needs manual test split (no proper test split in HF)
+if [ "${DATASET}" = "asdiv" ]; then
+    CMD="${CMD} --manual_split test"
 fi
 
 if [ -n "${MAX_PROBS}" ]; then
