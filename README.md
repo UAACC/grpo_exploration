@@ -204,7 +204,7 @@ Directory: `offline_grpo/`. The trainer (`offline_grpo/trainer.py`) extends TRL'
 
 Replaces the IS ratio with a sigmoid gate on "delight" = advantage × surprisal, where surprisal is computed under the student's own policy. The gate amplifies updates from surprising teacher successes (gate near 1) and suppresses updates from surprising teacher failures (gate near 0). No behavior policy log-probabilities required.
 
-Based on Osband (2026), "Delightful Distributed Policy Gradient" (arXiv:2603.20521). Full technical details in `dg-offline_imp.md`.
+Based on Osband (2026), "Delightful Distributed Policy Gradient" (arXiv:2603.20521). Full technical details in `docs/dg_offline/technical_reference.md` (knowledge hub at `docs/dg_offline/`).
 
 Directory: `DG-offline/`. Key hyperparameter: `--dg_temperature` (eta) controls gate sharpness.
 
@@ -230,7 +230,7 @@ Directory: `mixture_grpo/method_B_weighted/`.
 
 Combines online GRPO for student rollouts with DG-gated loss for teacher rollouts in a single training step. The teacher loss uses the same sigmoid gate as DG-offline, while the student loss is standard PPO-clipped GRPO.
 
-Directory: `mixture_grpo/dg_mixture/`. Design document: `docs/plans/dg_mixture_design.md`.
+Directory: `mixture_grpo/dg_mixture/`. Design document: `docs/dg_offline/plans/dg_mixture_design.md`.
 
 ## LoRA Configuration
 
