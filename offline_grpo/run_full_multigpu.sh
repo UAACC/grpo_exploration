@@ -92,7 +92,7 @@ run_eval() {
 
     echo "=== Evaluating trained model (LoRA merged) ==="
     echo "=== Checkpoint: ${output_dir} ==="
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${output_dir}" \
         --base_model "${STUDENT_DIR}" \
         --merge_lora \
@@ -145,7 +145,7 @@ eval-refsync1)
 
 eval-baseline)
     echo "=== Evaluating baseline (no LoRA) ==="
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${STUDENT_DIR}" \
         --runs 1
     echo "=== Baseline evaluation complete ==="
@@ -158,13 +158,13 @@ eval30-temp06)
     for variant in refsync0 refsync16 refsync1; do
         merged="${SCRATCH}/merged/offline_grpo_math_${variant}_merged"
         echo "--- Evaluating ${variant} (merged: ${merged}) ---"
-        python evaluate.py \
+        python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
             --model_path "${merged}" \
             --temperature 0.6 \
             --runs 30
     done
     echo "--- Evaluating baseline ---"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${STUDENT_DIR}" \
         --temperature 0.6 \
         --runs 30
@@ -176,13 +176,13 @@ eval30-temp0)
     for variant in refsync0 refsync16 refsync1; do
         merged="${SCRATCH}/merged/offline_grpo_math_${variant}_merged"
         echo "--- Evaluating ${variant} (merged: ${merged}) ---"
-        python evaluate.py \
+        python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
             --model_path "${merged}" \
             --temperature 0.0 \
             --runs 30
     done
     echo "--- Evaluating baseline ---"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${STUDENT_DIR}" \
         --temperature 0.0 \
         --runs 30

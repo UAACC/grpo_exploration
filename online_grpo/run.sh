@@ -23,7 +23,7 @@ MODEL_DIR="${MODEL_DIR:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/online_grpo"
 SCRATCH="/scratch/mrli"
 CONFIG_DIR="${WORK_DIR}/configs"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
 OUTPUT_DIR="${SCRATCH}/checkpoints/online_grpo_${DATASET_TYPE}"
 MERGED_DIR="${SCRATCH}/merged/online_grpo_${DATASET_TYPE}_merged"

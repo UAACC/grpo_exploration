@@ -110,7 +110,7 @@ eval)
     MERGED_DIR="${SCRATCH}/merged/offline_grpo_gsm8k_merged"
 
     # Use online_grpo evaluate.py which has GSM8K-specific extraction
-    EVAL_SCRIPT="${WORK_DIR}/../online_grpo/evaluate.py"
+    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
     python "${EVAL_SCRIPT}" \
         --model_path "${OUTPUT_DIR}" \
@@ -130,7 +130,7 @@ eval)
 # ── Evaluate baseline (no training) ──────────────────────────────
 eval-baseline)
     echo "=== Evaluating baseline on GSM8K ==="
-    EVAL_SCRIPT="${WORK_DIR}/../online_grpo/evaluate.py"
+    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
     python "${EVAL_SCRIPT}" \
         --model_path "${STUDENT_DIR}" \

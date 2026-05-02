@@ -66,7 +66,7 @@ mkdir -p "${WORK_DIR}/shared/logs"
 cd "${WORK_DIR}"
 
 # Build the command
-CMD="python shared/eval_unified.py \
+CMD="python Math_Verifier/eval_unified.py \
     --model_path ${MODEL} \
     --dataset ${DATASET} \
     --mode ${MODE} \

@@ -27,7 +27,7 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 SCRATCH=/scratch/mrli
 STUDENT="${SCRATCH}/models/Qwen2.5-0.5B-Instruct"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 BON_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/bc/eval_best_of_n.py"
 
 ETAS="0.1 0.5 1.0 2.0"

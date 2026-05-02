@@ -23,7 +23,7 @@ TEACHER_DIR="${TEACHER_DIR:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/offline_grpo"
 SCRATCH="/scratch/mrli"
 CONFIG_DIR="${WORK_DIR}/configs"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
 ROLLOUT_PATH="${SCRATCH}/rollouts/${DATASET_TYPE}_teacher/rollouts_${DATASET_TYPE}.jsonl"
 OUTPUT_DIR="${SCRATCH}/checkpoints/offline_grpo_${DATASET_TYPE}"

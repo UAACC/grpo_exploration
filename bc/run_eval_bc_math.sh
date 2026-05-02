@@ -17,7 +17,7 @@
 set -e
 
 SCRATCH="/scratch/mrli"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/offline_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
 module load python/3.11 cuda/12.6 arrow opencv
 source /project/aip-szepesva/mrli/backup_dongheng/.venv/bin/activate

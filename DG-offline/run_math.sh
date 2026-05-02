@@ -22,7 +22,7 @@ set -euo pipefail
 # ---- Paths (configurable via env vars) --------------------------------
 SCRATCH="${SCRATCH:-/scratch/mrli}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/DG-offline"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
 STUDENT_MODEL="${STUDENT_MODEL:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
 TEACHER_MODEL="${TEACHER_MODEL:-${SCRATCH}/models/Qwen2.5-Math-7B-Instruct}"

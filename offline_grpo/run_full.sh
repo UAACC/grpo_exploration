@@ -122,7 +122,7 @@ train)
 eval)
     echo "=== Evaluating trained model (LoRA merged) ==="
     MERGED_DIR="${SCRATCH}/merged/offline_grpo_math_merged"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${OUTPUT_DIR}" \
         --base_model "${STUDENT_DIR}" \
         --merge_lora \
@@ -133,7 +133,7 @@ eval)
 
 eval-baseline)
     echo "=== Evaluating baseline (no LoRA) ==="
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${STUDENT_DIR}" \
         --runs 1
     echo "=== Baseline evaluation complete ==="

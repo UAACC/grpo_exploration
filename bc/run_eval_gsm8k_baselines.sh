@@ -26,7 +26,7 @@ export TOKENIZERS_PARALLELISM=false
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 MODEL="${MODEL:?Set MODEL env var, e.g. MODEL=Qwen2.5-0.5B-Instruct}"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 MODEL_PATH="/scratch/mrli/models/${MODEL}"
 
 echo "=== Evaluating ${MODEL} on GSM8K ==="

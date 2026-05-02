@@ -21,7 +21,7 @@ cd /project/aip-szepesva/mrli/backup_dongheng/mixture_grpo
 echo "=== Qwen2.5-Math-7B-Instruct on MATH-500 (upgraded is_equiv_multi) ==="
 echo "  Mode: greedy, single run, max_tokens=2048 (matches our prior 74.96% measurement)"
 
-python evaluate.py \
+python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
     --model_path "${TEACHER_MODEL}" \
     --dataset_type math \
     --runs 1 \

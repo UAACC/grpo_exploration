@@ -12,7 +12,7 @@ Source ports of `math_equal`, `strip_string`, `extract_answer` etc. live in
 `DG-offline/math_equal.py`. See top of that file for upstream URLs.
 
 Usage:
-    python DG-offline/eval_r1_teacher.py \\
+    python Math_Verifier/eval_r1_teacher.py \\
         --model_path /scratch/mrli/models/DeepSeek-R1-Distill-Qwen-7B \\
         --runs 16 --max_tokens 32768
 """
@@ -30,10 +30,9 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-# DeepSeek-Math eval port — multi-candidate extractor + sympy-based equivalence
-import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from Math_Verifier import is_equiv_multi, extract_math_answer
+# Multi-candidate extractor + sympy-based equivalence (peer module in same package)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from math_eval import is_equiv_multi, extract_math_answer
 
 
 MATH_DIRECTIVE = (

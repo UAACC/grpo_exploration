@@ -22,7 +22,7 @@ echo "  comparator:    extract_math_answer + strip_string + math_equal (DeepSeek
 echo "  max_tokens:    32768 (matches DeepSeek's protocol)"
 echo "  runs:          16   (4x our prior 4-run; std should be ~0.14pp)"
 echo
-python DG-offline/eval_r1_teacher.py \
+python Math_Verifier/eval_r1_teacher.py \
     --model_path "${TEACHER_MODEL}" \
     --runs 16 \
     --temperature 0.6 \

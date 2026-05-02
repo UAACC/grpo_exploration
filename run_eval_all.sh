@@ -18,7 +18,7 @@ set -e
 
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng"
 SCRATCH="/scratch/mrli"
-EVAL_SCRIPT="${WORK_DIR}/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="${WORK_DIR}/Math_Verifier/eval_unified.py"
 
 # ── Activate environment ─────────────────────────────────────────
 module load python/3.11 cuda/12.6 arrow opencv
