@@ -23,8 +23,8 @@ from configs import (
 )
 
 # Project-wide canonical math equivalence checker (DeepSeek-Math port).
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
-from math_eval import is_equiv_multi  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from Math_Verifier import is_equiv_multi  # noqa: E402
 
 
 def parse_args():

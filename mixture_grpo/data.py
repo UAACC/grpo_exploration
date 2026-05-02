@@ -68,14 +68,20 @@ def load_teacher_rollouts(jsonl_path: str, vocab_size: int | None = None,
 
 
 def compute_math_correctness(extracted: str | None, ground_truth: str) -> float:
-    """Return 2.0 for correct, 0.0 otherwise, using math_verify (MATH dataset)."""
-    from math_verify import parse, verify
+    """Return 2.0 for correct, 0.0 otherwise, via Math_Verifier (DeepSeek-Math port).
+
+    Uses single-candidate `is_equiv` since callers pass a pre-extracted answer.
+    See docs/eval_methodology.md.
+    """
+    import os as _os, sys as _sys
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv
     try:
-        if verify(parse(extracted), parse(ground_truth)) is True:
-            return 2.0
+        return 2.0 if is_equiv(extracted, ground_truth) else 0.0
     except Exception:
-        pass
-    return 0.0
+        return 0.0
 
 
 def compute_gsm8k_correctness(extracted: str | None, ground_truth: str) -> float:

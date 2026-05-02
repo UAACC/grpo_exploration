@@ -117,10 +117,18 @@ class BCCollator:
 
 
 def _compute_reward_math(extracted: str | None, gt: str) -> float:
-    """MATH reward via math_verify. Returns 2.0 for correct, 0.0 otherwise."""
-    from math_verify import parse, verify
+    """MATH reward via Math_Verifier (DeepSeek-Math port). 2.0 correct, 0.0 wrong.
+
+    Uses single-candidate `is_equiv` since callers pass a pre-extracted answer.
+    See docs/eval_methodology.md for the upgrade history.
+    """
+    import os as _os, sys as _sys
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv
     try:
-        return 2.0 if verify(parse(extracted), parse(gt)) is True else 0.0
+        return 2.0 if is_equiv(extracted, gt) else 0.0
     except Exception:
         return 0.0
 
@@ -150,8 +158,8 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
     """Load rollout JSONL into a flat list of per-completion records.
 
     Auto-detects dataset type from the `dataset_type` field in the JSONL
-    (falls back to "math" if missing). Uses math_verify for MATH and numeric
-    comparison for GSM8K.
+    (falls back to "math" if missing). Uses Math_Verifier (DeepSeek-Math port)
+    for MATH and numeric comparison for GSM8K-style datasets.
     """
     from configs import extract_boxed_answer
 
@@ -189,7 +197,7 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
                         if boxed is not None:
                             reward = _compute_reward_gsm8k(boxed, gt)
                 else:
-                    # MATH (default): extract_boxed_answer as fallback, then math_verify
+                    # MATH (default): extract_boxed_answer as fallback, then Math_Verifier
                     if extracted is None:
                         extracted = extract_boxed_answer(run["response"])
                     reward = _compute_reward_math(extracted, gt)

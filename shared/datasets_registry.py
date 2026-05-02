@@ -85,13 +85,19 @@ def extract_numeric_answer(text: str) -> str | None:
 # Answer checking
 # ---------------------------------------------------------------------------
 
-def check_math(pred_text: str, gold_answer: str) -> bool:
-    """MATH-style: extract boxed answer, verify with math_verify."""
-    from math_verify import parse, verify
+def check_math(pred_text: str, gold_answer: str, question: str = "") -> bool:
+    """MATH-style: route through Math_Verifier (DeepSeek-Math port).
+
+    Multi-candidate `\\boxed{}` extraction with `strip_string` LaTeX
+    canonicalization and sympy-based equivalence. See docs/eval_methodology.md.
+    """
+    import os as _os, sys as _sys
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv_multi
     try:
-        pred = parse(extract_boxed_answer(pred_text))
-        gold = parse(gold_answer)
-        return verify(gold, pred) is True
+        return is_equiv_multi(question, pred_text, gold_answer)
     except Exception:
         return False
 

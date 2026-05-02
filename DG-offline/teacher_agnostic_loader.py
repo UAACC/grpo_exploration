@@ -158,17 +158,17 @@ def _compute_correctness_math(extracted: str | None, ground_truth: str, *,
                               response: str | None = None) -> float:
     """Return 2.0 if MATH-style answer matches ground truth, else 0.0.
 
-    Uses DeepSeek's port (`is_equiv_multi` from shared/math_eval.py) when the
+    Uses DeepSeek's port (`is_equiv_multi` from Math_Verifier) when the
     full *question* and *response* are available — gives multi-candidate
     extraction (every \\boxed{} in the response is tried). Falls back to
     single-candidate `is_equiv` when only the pre-extracted answer is on hand
     (e.g. older rollouts with extracted_answer already populated).
     """
     import os as _os, sys as _sys
-    _shared = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "shared")
-    if _shared not in _sys.path:
-        _sys.path.insert(0, _shared)
-    from math_eval import is_equiv, is_equiv_multi
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv, is_equiv_multi
 
     if question is not None and response is not None:
         return 2.0 if is_equiv_multi(question, response, ground_truth) else 0.0

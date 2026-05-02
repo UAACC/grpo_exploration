@@ -32,8 +32,8 @@ from vllm import LLM, SamplingParams
 
 # DeepSeek-Math eval port — multi-candidate extractor + sympy-based equivalence
 import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
-from math_eval import is_equiv_multi, extract_math_answer
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from Math_Verifier import is_equiv_multi, extract_math_answer
 
 
 MATH_DIRECTIVE = (

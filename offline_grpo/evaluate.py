@@ -1,15 +1,24 @@
-"""Evaluate a (possibly LoRA) checkpoint on the MATH test split using vLLM."""
+"""Evaluate a (possibly LoRA) checkpoint on the MATH test split using vLLM.
+
+Math accuracy uses the project-canonical Math_Verifier (DeepSeek-Math port)
+via `is_equiv_multi`. See docs/eval_methodology.md for the upgrade story.
+"""
 
 import argparse
+import os
+import sys
 
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 from vllm import LLM, SamplingParams
 from tqdm import tqdm
-from math_verify import parse, verify
 
 from configs import SYSTEM_PROMPT, DEFAULT_DATASET, DEFAULT_TARGET_MODEL, extract_boxed_answer
+
+# Project-wide canonical math equivalence checker.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from Math_Verifier import is_equiv_multi  # noqa: E402
 
 
 def parse_args():
@@ -86,7 +95,11 @@ def main():
             {"role": "user", "content": item["problem"]},
         ]
         formatted = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-        eval_data.append({"prompt": formatted, "answer": item["answer"]})
+        eval_data.append({
+            "prompt": formatted,
+            "answer": item["answer"],
+            "question": item["problem"],  # passed to is_equiv_multi for question-aware extraction
+        })
 
     prompts = [item["prompt"] for item in eval_data]
 
@@ -109,9 +122,7 @@ def main():
         lengths = []
         for i, output in enumerate(outputs):
             gen_text = output.outputs[0].text
-            pred = parse(extract_boxed_answer(gen_text))
-            gold = parse(eval_data[i]["answer"])
-            if verify(gold, pred):
+            if is_equiv_multi(eval_data[i].get("question", ""), gen_text, eval_data[i]["answer"]):
                 correct += 1
             lengths.append(len(output.outputs[0].token_ids))
 
