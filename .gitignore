@@ -15,9 +15,6 @@
 docs/*
 !docs/progress_reports/
 !docs/progress_reports/**
-!docs/dg_offline/
-!docs/dg_offline/**
-!docs/eval_methodology.md
 !run_eval_all.sh
 !setup_downloads.sh
 !.gitignore
