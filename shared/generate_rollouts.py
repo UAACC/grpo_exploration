@@ -26,6 +26,17 @@ def parse_args():
     p.add_argument("--output_path", type=str, required=True)
     p.add_argument("--num_generations", type=int, default=5)
     p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--top_p", type=float, default=1.0,
+                    help="Nucleus sampling. R1-distilled teachers want 0.95.")
+    p.add_argument("--max_tokens", type=int, default=None,
+                    help="Override cfg.max_tokens. R1-distilled teachers want 16384+ "
+                    "(or 32768 if you can pay the training-time cost).")
+    p.add_argument("--max_model_len", type=int, default=None,
+                    help="Override cfg.max_model_len. Set together with --max_tokens.")
+    p.add_argument("--no_system_prompt", action="store_true",
+                    help="Drop the system role; prepend cfg.system_prompt to the user "
+                    "message. Required for DeepSeek-R1-Distill teachers, which were trained "
+                    "without system prompts and degrade ~3pp when given one.")
     p.add_argument("--max_problems", type=int, default=None)
     p.add_argument("--manual_split", type=str, default=None, choices=["train", "test"],
                     help="For datasets without proper train split (e.g., asdiv).")
@@ -74,13 +85,21 @@ def main():
     )
     print(f"  Problems: {len(problems)}")
 
+    # Resolve overrides
+    max_tokens = args.max_tokens if args.max_tokens is not None else cfg.max_tokens
+    max_model_len = args.max_model_len if args.max_model_len is not None else cfg.max_model_len
+
+    print(f"  Sampling: temp={args.temperature}, top_p={args.top_p}")
+    print(f"  Lengths: max_tokens={max_tokens}, max_model_len={max_model_len}")
+    print(f"  No system prompt: {args.no_system_prompt}")
+
     # Load teacher
     llm = LLM(
         model=args.teacher_model,
         tensor_parallel_size=args.tensor_parallel_size,
         dtype="auto",
         trust_remote_code=True,
-        max_model_len=cfg.max_model_len,
+        max_model_len=max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
         enforce_eager=False,
     )
@@ -88,7 +107,8 @@ def main():
 
     params = SamplingParams(
         temperature=args.temperature,
-        max_tokens=cfg.max_tokens,
+        top_p=args.top_p,
+        max_tokens=max_tokens,
         seed=args.seed,
         logprobs=1,
         n=args.num_generations,
@@ -97,10 +117,18 @@ def main():
     # Build prompts
     prompts = []
     for prob in problems:
-        chat = [
-            {"role": "system", "content": cfg.system_prompt},
-            {"role": "user", "content": prob["problem"]},
-        ]
+        if args.no_system_prompt:
+            # R1-Distill recommendation: avoid system prompt; fold the directive
+            # into the user message. The chat template will auto-prefix the
+            # assistant turn with `<think>\n` for R1-distill models.
+            chat = [
+                {"role": "user", "content": f"{prob['problem']}\n{cfg.system_prompt}"},
+            ]
+        else:
+            chat = [
+                {"role": "system", "content": cfg.system_prompt},
+                {"role": "user", "content": prob["problem"]},
+            ]
         prompts.append(tokenizer.apply_chat_template(
             chat, tokenize=False, add_generation_prompt=True
         ))
