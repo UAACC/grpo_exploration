@@ -45,6 +45,7 @@ from typing import Iterable
 
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
+from vllm.inputs import TokensPrompt
 
 
 # Hardcoded for our setup; matches what `shared/datasets_registry.py:math` defines.
@@ -168,9 +169,15 @@ def main():
     # token_id list). vLLM returns prompt_logprobs for each position.
     print("Querying teacher for student-aligned logprobs (continuous-batched) ...")
     t1 = time.time()
-    # Build all token_id lists at once and let vLLM batch them.
-    token_ids_inputs = [pids + cids for (_, _, pids, cids, _, _, _) in flat]
-    outputs = llm.generate(prompt_token_ids=token_ids_inputs, sampling_params=sp_logprobs)
+    # Build TokensPrompt objects (vLLM 0.16+ API; the older `prompt_token_ids=`
+    # kwarg was removed). Each TokensPrompt feeds the teacher pre-tokenized
+    # student-vocab IDs, so the teacher reads the exact same token sequence
+    # the student will see at training time.
+    token_prompts = [
+        TokensPrompt(prompt_token_ids=(pids + cids))
+        for (_, _, pids, cids, _, _, _) in flat
+    ]
+    outputs = llm.generate(token_prompts, sampling_params=sp_logprobs)
     print(f"  [{time.time()-t1:.1f}s] teacher forward done; {len(outputs)} outputs")
     print()
 
