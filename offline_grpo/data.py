@@ -9,10 +9,90 @@ from configs import MATH_SYSTEM_PROMPT, extract_boxed_answer, extract_gsm8k_answ
 
 
 # ---------------------------------------------------------------------------
+# Consumer-side Path-A safety check.
+#
+# Offline-GRPO's IS ratio depends on `completion_ids` being aligned with
+# whatever tokenization the student forward-passes on. Direct re-use of
+# teacher-vocab IDs is silently corrupt when teacher and student tokenizers
+# diverge at any ID (e.g., R1's `<think>` (151648) / `</think>` (151649)
+# colliding with unrelated student-vocab special tokens).
+#
+# The check below decodes each rollout's stored `completion_ids` under the
+# *student* tokenizer and compares the result to the rollout's `response`
+# text. If they round-trip cleanly, those IDs are safe to feed to the
+# student. If not, refuse to load — caller should run the rollout file
+# through `shared/prepare_cleaned_og_rollouts.py` (or use a teacher whose
+# tokenizer agrees with the student's).
+#
+# Tolerance: BPE round-trip can introduce trivial whitespace/special-token
+# differences; we strip whitespace before comparison. A handful of mismatches
+# is allowed (default 1%) before raising — set MAX_INVALID_FRACTION higher
+# to be more permissive.
+# ---------------------------------------------------------------------------
+
+def _normalize(s: str) -> str:
+    return "".join(s.split())
+
+
+def assert_completion_ids_safe_for_student(
+    records: list[dict],
+    student_tokenizer,
+    sample_n: int = 200,
+    max_invalid_fraction: float = 0.01,
+) -> None:
+    """Fail loud if rollout `completion_ids` aren't student-vocab-safe.
+
+    Compares `student_tokenizer.decode(completion_ids)` against `response`
+    on a random sample. Passes when the decoded text equals the response OR
+    is a prefix of it (the OOV-truncation case in legacy loaders only chops
+    from the tail; the *bomb* is when `decoded` is unrelated text, which
+    happens when `completion_ids` are teacher-vocab IDs the student doesn't
+    have at the same string mapping). See docs/eval_methodology.md.
+    """
+    if not records:
+        return
+    import random
+    rng = random.Random(0)
+    sample = rng.sample(records, min(sample_n, len(records)))
+    invalid = []
+    for rec in sample:
+        cids = rec.get("completion_ids")
+        resp = rec.get("response", "")
+        if not cids or not resp:
+            continue
+        decoded = student_tokenizer.decode(cids, skip_special_tokens=True)
+        ndec, nresp = _normalize(decoded), _normalize(resp)
+        # Safe iff decoded equals or is a prefix of response (tolerates
+        # legacy OOV-truncation that cuts only from the tail).
+        if ndec != nresp and not nresp.startswith(ndec):
+            invalid.append((rec.get("question_id"), rec.get("run_id"),
+                            decoded[:200], resp[:200]))
+    threshold = max(1, int(max_invalid_fraction * len(sample)))
+    if len(invalid) > threshold:
+        first = invalid[0]
+        raise RuntimeError(
+            f"Rollout `completion_ids` are NOT student-vocab-safe: "
+            f"{len(invalid)}/{len(sample)} sampled completions failed the "
+            f"student-decode round-trip. Feeding these to the student forward "
+            f"pass would silently corrupt training (Path-B bomb).\n"
+            f"  First mismatch: question_id={first[0]}, run_id={first[1]}\n"
+            f"  Decoded under student (head): {first[2]!r}\n"
+            f"  Original response (head):    {first[3]!r}\n"
+            f"Run the rollout file through `shared/prepare_cleaned_og_rollouts.py` "
+            f"to produce a student-aligned version before training, OR use a teacher "
+            f"whose tokenizer agrees with the student's at every emitted ID."
+        )
+
+
+# ---------------------------------------------------------------------------
 # 1. Load rollouts
 # ---------------------------------------------------------------------------
 
-def load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]:
+def load_rollouts(
+    jsonl_path: str,
+    vocab_size: int | None = None,
+    student_tokenizer=None,
+) -> list[dict]:
     """Load rollout JSONL into a flat list of per-completion records.
 
     Each record contains:
@@ -61,6 +141,9 @@ def load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]:
                 })
     if truncated > 0:
         print(f"  Warning: {truncated} completions truncated at out-of-vocab tokens (vocab_size={vocab_size})")
+    if student_tokenizer is not None:
+        assert_completion_ids_safe_for_student(records, student_tokenizer)
+        print("  Path-A check passed: completion_ids round-trip cleanly under the student tokenizer.")
     return records
 
 

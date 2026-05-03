@@ -60,7 +60,17 @@ class BCDataset(Dataset):
         print(f"  BCDataset: {len(self.samples)} samples, max_length={max_length}")
 
     def _build_ids(self, rec: dict) -> tuple[list[int], list[int]]:
-        """Tokenize the prompt via chat template, return (prompt_ids, completion_ids)."""
+        """Tokenize prompt + response under the STUDENT tokenizer (Path A).
+
+        Re-tokenizing the teacher's *response text* under the student tokenizer
+        produces student-vocab `comp_ids` that mean exactly what the response
+        text says when the student forward-passes on them. Reading the JSONL's
+        pre-stored `completion_ids` directly (Path B) is a silent-corruption
+        footgun: those IDs are in the *teacher's* vocab, and any teacher token
+        that maps to a different string in the student's vocab — including
+        the R1-Distill `<think>` (151648) and `</think>` (151649) markers —
+        becomes garbage cross-entropy targets. See docs/eval_methodology.md.
+        """
         chat = [
             {"role": "system", "content": rec["system_prompt"]},
             {"role": "user", "content": rec["problem"]},
@@ -69,7 +79,9 @@ class BCDataset(Dataset):
             chat, tokenize=False, add_generation_prompt=True,
         )
         prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        comp_ids = rec["completion_ids"]
+        # Re-tokenize the teacher response under the student tokenizer.
+        # `rec["response"]` is the decoded text from vLLM (special tokens stripped).
+        comp_ids = self.tokenizer.encode(rec["response"], add_special_tokens=False)
         return prompt_ids, comp_ids
 
     def __len__(self):
@@ -207,7 +219,9 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
                     "problem": item["original_problem"],
                     "ground_truth": gt,
                     "system_prompt": item.get("system_prompt", MATH_SYSTEM_PROMPT),
-                    "completion_ids": cids,
+                    # `response` is the canonical training input; BCDataset
+                    # re-tokenizes it under the student tokenizer (Path A).
+                    "response": run["response"],
                     "reward": reward,
                 })
 
