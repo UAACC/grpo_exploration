@@ -55,6 +55,10 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.95)
+    p.add_argument("--save_completions", type=str, default=None,
+                    help="If set, save per-problem records (one JSONL line per "
+                    "(run, problem) pair: problem, gold, generated_text, candidates, "
+                    "completion_token_count, correct).")
     args = p.parse_args()
     # Resolve --dataset / --dataset_type
     if args.dataset is None and args.dataset_type is None:
@@ -91,21 +95,59 @@ def build_prompts(problems, cfg, tokenizer):
     return prompts
 
 
-def run_greedy_eval(llm, prompts, problems, cfg, runs, seed, max_tokens=None):
+def run_greedy_eval(llm, prompts, problems, cfg, runs, seed, max_tokens=None,
+                    save_completions=None):
     if max_tokens is None:
         max_tokens = cfg.max_tokens
+
+    save_fp = None
+    if save_completions:
+        os.makedirs(os.path.dirname(save_completions) or ".", exist_ok=True)
+        save_fp = open(save_completions, "w", encoding="utf-8")
+
+    # Optional candidate extractor for the JSONL (for inspection only).
+    try:
+        sys.path.insert(0, _PROJECT_ROOT)
+        from Math_Verifier import extract_math_answer
+    except Exception:
+        extract_math_answer = None
+
     all_accs = []
     for run_idx in tqdm(range(runs), desc="Greedy runs"):
         run_seed = seed + run_idx
         params = SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=run_seed)
         outputs = llm.generate(prompts, params)
-        correct = sum(
-            1 for i, out in enumerate(outputs)
-            if cfg.check_answer(out.outputs[0].text, problems[i]["answer"])
-        )
+        correct = 0
+        for i, out in enumerate(outputs):
+            text = out.outputs[0].text
+            ok = cfg.check_answer(text, problems[i]["answer"])
+            if ok:
+                correct += 1
+            if save_fp is not None:
+                import json as _json
+                cand = []
+                if extract_math_answer is not None:
+                    try:
+                        cand = extract_math_answer(problems[i]["problem"], text, task=cfg.name)
+                    except Exception:
+                        pass
+                save_fp.write(_json.dumps({
+                    "run": run_idx,
+                    "seed": run_seed,
+                    "problem_id": i,
+                    "problem": problems[i]["problem"],
+                    "gold": problems[i]["answer"],
+                    "generated_text": text,
+                    "candidates": cand,
+                    "completion_token_count": len(out.outputs[0].token_ids),
+                    "correct": ok,
+                }) + "\n")
         acc = correct / len(outputs)
         all_accs.append(acc)
         print(f"  Run {run_idx+1}: accuracy={acc:.4f} (seed={run_seed})")
+    if save_fp is not None:
+        save_fp.close()
+        print(f"  Saved per-problem records to {save_completions}")
 
     mean_acc = sum(all_accs) / len(all_accs)
     print(f"\nGreedy accuracy: {mean_acc:.4f} (over {runs} run(s))")
@@ -213,7 +255,8 @@ def main():
     # Eval
     if args.mode in ("greedy", "both"):
         run_greedy_eval(llm, prompts, problems, cfg, args.runs, args.seed,
-                        max_tokens=args.max_tokens)
+                        max_tokens=args.max_tokens,
+                        save_completions=args.save_completions)
 
     if args.mode in ("best_of_n", "both"):
         run_best_of_n(llm, prompts, problems, cfg, args.n_samples,

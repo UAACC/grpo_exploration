@@ -91,11 +91,22 @@ if [ -n "${MAX_PROBS}" ]; then
     CMD="${CMD} --max_problems ${MAX_PROBS}"
 fi
 
+# Override dataset registry defaults for verbose R1-trained students. Without
+# these, MATH defaults to max_tokens=2048 which truncates R1-style reasoning
+# chains before \boxed{}.
+if [ -n "${MAX_TOKENS:-}" ]; then
+    CMD="${CMD} --max_tokens ${MAX_TOKENS}"
+fi
+if [ -n "${MAX_MODEL_LEN:-}" ]; then
+    CMD="${CMD} --max_model_len ${MAX_MODEL_LEN}"
+fi
+
 echo "=== Unified eval ==="
 echo "  Dataset: ${DATASET}"
 echo "  Model: ${MODEL}"
 echo "  Mode: ${MODE}"
 echo "  Runs: ${RUNS}, N: ${N_SAMPLES}, Temp: ${TEMP}"
+echo "  max_tokens: ${MAX_TOKENS:-(registry default)}, max_model_len: ${MAX_MODEL_LEN:-(registry default)}"
 echo ""
 
 eval ${CMD}
