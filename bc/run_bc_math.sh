@@ -24,11 +24,13 @@
 set -e
 
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/bc"
-SCRATCH="/scratch/mrli"
-MODEL_DIR="${SCRATCH}/models/Qwen2.5-0.5B-Instruct"
+SCRATCH="${SCRATCH:-/scratch/mrli}"
+MODEL_DIR="${MODEL_DIR:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
 
-ROLLOUT_PATH="${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl"
-OUTPUT_DIR="${SCRATCH}/checkpoints/bc_math"
+ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/bc_math}"
+MAX_LENGTH="${MAX_LENGTH:-2304}"
+WANDB_RUN_NAME_OVERRIDE="${WANDB_RUN_NAME:-}"
 
 # ── Activate environment ─────────────────────────────────────────
 module load python/3.11 cuda/12.6 arrow opencv
@@ -40,7 +42,11 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 export WANDB_API_KEY=$(cat /project/aip-szepesva/mrli/backup_dongheng/offline_grpo/.wandb_key)
 export WANDB_PROJECT="offline-grpo-math"
-export WANDB_RUN_NAME="bc-0.5B-all-completions-$(date +%m%d)"
+if [ -n "${WANDB_RUN_NAME_OVERRIDE}" ]; then
+    export WANDB_RUN_NAME="${WANDB_RUN_NAME_OVERRIDE}"
+else
+    export WANDB_RUN_NAME="bc-0.5B-all-completions-$(date +%m%d)"
+fi
 cd "${WORK_DIR}"
 
 mkdir -p logs/bc_math
@@ -68,7 +74,7 @@ accelerate launch \
     --target_model "${MODEL_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --run_name "${WANDB_RUN_NAME}" \
-    --max_length 2304 \
+    --max_length "${MAX_LENGTH}" \
     --num_train_epochs 1 \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 2 \

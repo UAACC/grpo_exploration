@@ -34,6 +34,9 @@ MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/dg_offline_math}"
 #if not set, default to 1.0 (no gating)
 DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
+MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
+MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
+WANDB_PROJECT="${WANDB_PROJECT:-dg-offline-math}"
 
 # ---- Environment ------------------------------------------------------
 module load python/3.11 cuda/12.6 arrow opencv
@@ -70,7 +73,7 @@ if [ "$CMD" = "train" ]; then
         --behavior_model "${TEACHER_MODEL}" \
         --rollout_path "${ROLLOUT_PATH}" \
         --output_dir "${CHECKPOINT_DIR}" \
-        --wandb_project "dg-offline-math" \
+        --wandb_project "${WANDB_PROJECT}" \
         --dg_temperature "${DG_ETA}" \
         --dg_gating "${DG_GATING}" \
         --learning_rate 3e-6 \
@@ -79,7 +82,8 @@ if [ "$CMD" = "train" ]; then
         --per_device_train_batch_size 4 \
         --gradient_accumulation_steps 2 \
         --num_train_epochs 1 \
-        --max_completion_length 2048 \
+        --max_prompt_length "${MAX_PROMPT_LENGTH}" \
+        --max_completion_length "${MAX_COMPLETION_LENGTH}" \
         --max_grad_norm 1.0 \
         --weight_decay 0.01 \
         --warmup_ratio 0.1 \
