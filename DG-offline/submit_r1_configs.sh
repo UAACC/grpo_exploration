@@ -35,6 +35,12 @@ MAX_COMPL=8192
 MAX_PROMPT=256
 MAX_MODEL_LEN=$((MAX_COMPL + MAX_PROMPT + 256))   # 8704
 
+# Memory budget on L40s 44GB requires per_device=1 at 8K context for the 0.5B
+# student + LoRA + Adam states. Effective batch = 1 × 4 GPUs × 8 = 32 (same as
+# the per_device=4 × 4 × 2 = 32 we used at 2K context).
+PER_DEVICE_BATCH=1
+GRAD_ACCUM=8
+
 cd /project/aip-szepesva/mrli/backup_dongheng
 
 submit() {
@@ -46,12 +52,12 @@ submit() {
 
 # 1. BC-all on R1
 submit "bc-all-r1" \
-    --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",OUTPUT_DIR="${SCRATCH}/checkpoints/bc_math_r1",MAX_LENGTH="${MAX_MODEL_LEN}",WANDB_RUN_NAME="bc-all-r1-$(date +%m%d)" \
+    --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",OUTPUT_DIR="${SCRATCH}/checkpoints/bc_math_r1",MAX_LENGTH="${MAX_MODEL_LEN}",PER_DEVICE_BATCH="${PER_DEVICE_BATCH}",GRAD_ACCUM="${GRAD_ACCUM}",WANDB_RUN_NAME="bc-all-r1-$(date +%m%d)" \
     bc/run_bc_math.sh
 
 # 2. BC-correct-only on R1
 submit "bc-cc-r1" \
-    --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",OUTPUT_DIR="${SCRATCH}/checkpoints/bc_math_correct_only_r1",MAX_LENGTH="${MAX_MODEL_LEN}",WANDB_RUN_NAME="bc-cc-r1-$(date +%m%d)" \
+    --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",OUTPUT_DIR="${SCRATCH}/checkpoints/bc_math_correct_only_r1",MAX_LENGTH="${MAX_MODEL_LEN}",PER_DEVICE_BATCH="${PER_DEVICE_BATCH}",GRAD_ACCUM="${GRAD_ACCUM}",WANDB_RUN_NAME="bc-cc-r1-$(date +%m%d)" \
     bc/run_bc_correct_only_math.sh
 
 # 3. Offline-GRPO on cleaned R1 (only if cleaned dataset exists)
@@ -65,7 +71,7 @@ fi
 for ETA in 0.1 0.5 1.0 2.0; do
     SAFE_ETA="${ETA/./_}"   # 0.5 -> 0_5
     submit "dg-r1-eta${SAFE_ETA}" \
-        --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",CHECKPOINT_DIR="${SCRATCH}/checkpoints/dg_offline_math_r1_eta${SAFE_ETA}",MERGED_DIR="${SCRATCH}/merged/dg_offline_math_r1_eta${SAFE_ETA}",DG_ETA="${ETA}",MAX_COMPLETION_LENGTH="${MAX_COMPL}",MAX_PROMPT_LENGTH="${MAX_PROMPT}",WANDB_PROJECT="dg-offline-math-r1" \
+        --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",CHECKPOINT_DIR="${SCRATCH}/checkpoints/dg_offline_math_r1_eta${SAFE_ETA}",MERGED_DIR="${SCRATCH}/merged/dg_offline_math_r1_eta${SAFE_ETA}",DG_ETA="${ETA}",MAX_COMPLETION_LENGTH="${MAX_COMPL}",MAX_PROMPT_LENGTH="${MAX_PROMPT}",PER_DEVICE_BATCH="${PER_DEVICE_BATCH}",GRAD_ACCUM="${GRAD_ACCUM}",WANDB_PROJECT="dg-offline-math-r1" \
         DG-offline/run_math.sh
 done
 

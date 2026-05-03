@@ -36,6 +36,8 @@ DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
+PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 WANDB_PROJECT="${WANDB_PROJECT:-dg-offline-math}"
 
 # ---- Environment ------------------------------------------------------
@@ -79,8 +81,8 @@ if [ "$CMD" = "train" ]; then
         --learning_rate 3e-6 \
         --beta 0.001 \
         --num_generations 4 \
-        --per_device_train_batch_size 4 \
-        --gradient_accumulation_steps 2 \
+        --per_device_train_batch_size "${PER_DEVICE_BATCH}" \
+        --gradient_accumulation_steps "${GRAD_ACCUM}" \
         --num_train_epochs 1 \
         --max_prompt_length "${MAX_PROMPT_LENGTH}" \
         --max_completion_length "${MAX_COMPLETION_LENGTH}" \

@@ -28,6 +28,8 @@ MODEL_DIR="${MODEL_DIR:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
 ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/bc_math_correct_only}"
 MAX_LENGTH="${MAX_LENGTH:-2304}"
+PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
+GRAD_ACCUM="${GRAD_ACCUM:-2}"
 WANDB_RUN_NAME_OVERRIDE="${WANDB_RUN_NAME:-}"
 
 # ── Activate environment ─────────────────────────────────────────
@@ -68,8 +70,8 @@ accelerate launch \
     --filter_correct_only \
     --max_length "${MAX_LENGTH}" \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 2 \
+    --per_device_train_batch_size "${PER_DEVICE_BATCH}" \
+    --gradient_accumulation_steps "${GRAD_ACCUM}" \
     --learning_rate 3e-6 \
     --max_grad_norm 1.0 \
     --weight_decay 0.01 \
