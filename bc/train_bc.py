@@ -90,6 +90,15 @@ def main():
     if args.run_name is None:
         args.run_name = f"bc-{args.target_model.split('/')[-1]}-{time_str}"
 
+    # Patch Qwen2 with Liger fused kernels BEFORE model load. Critical at long
+    # context: fused-linear-CE skips materializing the [seq_len, vocab_size]
+    # logits + log_softmax tensors, which OOM'd vanilla HF at 16K context on
+    # L40s 44 GiB. Numerically equivalent to standard CE up to fp32 summation
+    # rounding (negligible vs SGD noise). Used by TRL's official long-context
+    # SFT recipes.
+    from liger_kernel.transformers import apply_liger_kernel_to_qwen2
+    apply_liger_kernel_to_qwen2()
+
     # ---- 1. Load model & tokenizer -------------------------------------
     print(f"Loading model: {args.target_model}")
     model_config = AutoConfig.from_pretrained(args.target_model)

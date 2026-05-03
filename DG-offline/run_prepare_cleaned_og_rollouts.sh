@@ -4,15 +4,21 @@
 # train on R1-Distill rollouts without the silent-corruption case at
 # `<think>` (151648) / `</think>` (151649) token IDs.
 #
+# Uses a transformers-direct forward pass (gather + chunked-fp32 logsumexp)
+# instead of vLLM `prompt_logprobs=1`, because vLLM materialized the full
+# [seq_len, vocab_size] log_softmax in fp32 and OOM'd at long context (5
+# consecutive failures with vLLM, the last in `compute_logprobs` ->
+# `log_softmax(..., dtype=torch.float32)` at ~38K context).
+#
 # Output: /scratch/mrli/rollouts/math_deepseek_r1_cleaned/rollouts_full.jsonl
 #
 #SBATCH --account=aip-szepesva
 #SBATCH --job-name=r1-og-prep
-#SBATCH --time=06:00:00
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=l40s:4
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=128G
+#SBATCH --gpus-per-node=l40s:1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 #SBATCH --output=DG-offline/logs/r1ogprep-%j.out
 #SBATCH --error=DG-offline/logs/r1ogprep-%j.err
 
@@ -33,12 +39,11 @@ export HF_DATASETS_CACHE="${SCRATCH}/datasets/MATH"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 mkdir -p "${OUTPUT_DIR}"
 cd /project/aip-szepesva/mrli/backup_dongheng
 
-echo "=== Cleaned OG rollout prep ==="
+echo "=== Cleaned OG rollout prep (transformers-direct) ==="
 echo "  input:    ${INPUT_PATH}"
 echo "  output:   ${OUTPUT_PATH}"
 echo "  teacher:  ${TEACHER_MODEL}"
@@ -50,9 +55,9 @@ python shared/prepare_cleaned_og_rollouts.py \
     --output_path "${OUTPUT_PATH}" \
     --teacher_model "${TEACHER_MODEL}" \
     --student_model "${STUDENT_MODEL}" \
-    --tensor_parallel_size 4 \
-    --gpu_memory_utilization 0.90 \
-    --max_model_len 33280
+    --device "cuda:0" \
+    --max_seq_len 38000 \
+    --logsumexp_chunk 1024
 
 echo "=== Prep complete ==="
 ls -la "${OUTPUT_PATH}"
