@@ -85,21 +85,42 @@ def extract_numeric_answer(text: str) -> str | None:
 # Answer checking
 # ---------------------------------------------------------------------------
 
+_MATH_EQUIV_TIMEOUT_SEC = 5
+
+
+class _MathEquivTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _MathEquivTimeout()
+
+
 def check_math(pred_text: str, gold_answer: str, question: str = "") -> bool:
     """MATH-style: route through Math_Verifier (DeepSeek-Math port).
 
     Multi-candidate `\\boxed{}` extraction with `strip_string` LaTeX
     canonicalization and sympy-based equivalence. See docs/eval_methodology.md.
+
+    Wrapped in a SIGALRM-based per-call timeout (5s) because pathological
+    inputs (e.g., untrained-baseline outputs with malformed LaTeX) can wedge
+    sympy.parse_latex. Hangs are treated as wrong. Single-thread only.
     """
-    import os as _os, sys as _sys
+    import os as _os, sys as _sys, signal as _signal
     _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
     if _root not in _sys.path:
         _sys.path.insert(0, _root)
     from Math_Verifier import is_equiv_multi
+
+    old_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
+    _signal.alarm(_MATH_EQUIV_TIMEOUT_SEC)
     try:
         return is_equiv_multi(question, pred_text, gold_answer)
-    except Exception:
+    except (_MathEquivTimeout, Exception):
         return False
+    finally:
+        _signal.alarm(0)
+        _signal.signal(_signal.SIGALRM, old_handler)
 
 
 def check_numeric(pred_text: str, gold_answer: str) -> bool:

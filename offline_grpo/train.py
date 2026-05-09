@@ -12,6 +12,18 @@ import json
 import os
 from datetime import datetime
 
+# Disable accelerate's automatic fp32 cast of model outputs BEFORE any
+# accelerate / trl / transformers import that might capture the function
+# reference. With mixed_precision=bf16 set in the yaml, the model itself
+# runs in bf16, but accelerate wraps `forward` with `convert_outputs_to_fp32`,
+# which does `tensor.float()` on the logits. At long context that's
+# `[batch * num_gen, seq, vocab] * 4 bytes` for *each* of student + reference,
+# i.e. ~37 GiB per step at 8K seq × 152K vocab × 4 generations -> OOM on L40s.
+# Making the cast a no-op leaves logits in bf16 throughout; the trainer's
+# loss computation tolerates bf16 inputs.
+import accelerate.utils.operations as _accel_ops
+_accel_ops.convert_to_fp32 = lambda tensor: tensor
+
 import torch
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
