@@ -79,7 +79,7 @@ train)
 eval)
     echo "=== Evaluating trained model (LoRA merged) ==="
     MERGED_DIR="${SCRATCH}/merged/online_grpo_gsm8k_merged"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${OUTPUT_DIR}" \
         --base_model "${MODEL_DIR}" \
         --merge_lora \
@@ -91,7 +91,7 @@ eval)
 
 eval-baseline)
     echo "=== Evaluating baseline (no training) ==="
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${MODEL_DIR}" \
         --temperature 0.0 \
         --runs 5
@@ -102,12 +102,12 @@ eval30)
     echo "=== Reliable eval: 30 runs, temp=0.0 ==="
     MERGED_DIR="${SCRATCH}/merged/online_grpo_gsm8k_merged"
     echo "--- Trained model ---"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${MERGED_DIR}" \
         --temperature 0.0 \
         --runs 30
     echo "--- Baseline ---"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${MODEL_DIR}" \
         --temperature 0.0 \
         --runs 30
@@ -120,7 +120,7 @@ eval-checkpoints)
         ckpt="${OUTPUT_DIR}/checkpoint-${step}"
         merged="${SCRATCH}/merged/online_grpo_gsm8k_merged_step${step}"
         echo "--- Checkpoint step ${step} ---"
-        python evaluate.py \
+        python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
             --model_path "${ckpt}" \
             --base_model "${MODEL_DIR}" \
             --merge_lora \
@@ -129,7 +129,7 @@ eval-checkpoints)
             --runs 5
     done
     echo "--- Baseline ---"
-    python evaluate.py \
+    python /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
         --model_path "${MODEL_DIR}" \
         --temperature 0.0 \
         --runs 5

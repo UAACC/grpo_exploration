@@ -365,7 +365,7 @@ This reframes what offline methods should be doing: rather than trying to teach 
 
 ## DG-Offline: Delightful Policy Gradient
 
-Based on Osband (2026), "Delightful Distributed Policy Gradient" (arXiv:2603.20521). See `dg-offline_imp.md` for full technical details.
+Based on Osband (2026), "Delightful Distributed Policy Gradient" (arXiv:2603.20521). See `docs/dg_offline/technical_reference.md` for full technical details (knowledge hub at `docs/dg_offline/`).
 
 ### How it works
 

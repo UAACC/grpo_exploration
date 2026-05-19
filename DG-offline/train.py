@@ -13,7 +13,6 @@ Usage:
 import argparse
 import json
 import os
-import sys
 from datetime import datetime
 
 import torch
@@ -21,16 +20,13 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import GRPOConfig
 
-# Import local trainer BEFORE adding offline_grpo to sys.path
-# (both have trainer.py — local must resolve first)
 from trainer import DGOfflineTrainer
-
-# Add offline_grpo for shared data loading utilities
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-_project_root = os.path.dirname(_this_dir)
-sys.path.insert(0, os.path.join(_project_root, "offline_grpo"))
-
-from data import load_rollouts, compute_rewards_and_advantages, build_training_dataset, build_offline_lookup
+from teacher_agnostic_loader import (
+    load_rollouts_text,
+    compute_rewards_and_advantages,
+    build_training_dataset,
+    build_offline_lookup,
+)
 
 
 class MetricsFileCallback(TrainerCallback):
@@ -79,6 +75,9 @@ def parse_args():
     p.add_argument("--per_device_train_batch_size", type=int, default=4)
     p.add_argument("--gradient_accumulation_steps", type=int, default=2)
     p.add_argument("--num_train_epochs", type=int, default=1)
+    p.add_argument("--max_steps", type=int, default=-1,
+                    help="If >0, cap training at this many optimizer steps "
+                    "(overrides num_train_epochs). Useful for smoke tests.")
     p.add_argument("--max_prompt_length", type=int, default=256)
     p.add_argument("--max_completion_length", type=int, default=2048)
     p.add_argument("--max_grad_norm", type=float, default=1.0)
@@ -111,11 +110,15 @@ def main():
     args = parse_args()
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    # ---- 1. Load & process offline rollouts ----------------------------
-    from transformers import AutoConfig
-    model_config = AutoConfig.from_pretrained(args.target_model)
+    # ---- 1. Load student tokenizer (needed by the loader) ---------------
+    tokenizer = AutoTokenizer.from_pretrained(args.target_model)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # ---- 2. Load & process offline rollouts -----------------------------
+    # Path A: re-tokenize each teacher response under the STUDENT tokenizer.
+    # No assumption that teacher and student share a vocabulary.
     print(f"Loading rollouts from {args.rollout_path} ...")
-    records = load_rollouts(args.rollout_path, vocab_size=model_config.vocab_size)
+    records = load_rollouts_text(args.rollout_path, tokenizer)
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
@@ -126,7 +129,7 @@ def main():
     offline_data = build_offline_lookup(records)
     print(f"  Dataset: {len(dataset)} rows, {len(offline_data)} offline entries")
 
-    # ---- 2. Load target model ------------------------------------------
+    # ---- 3. Load target model ------------------------------------------
     print(f"Loading target model: {args.target_model}")
     model = AutoModelForCausalLM.from_pretrained(
         args.target_model,
@@ -136,10 +139,7 @@ def main():
     )
     model.config.use_cache = False
 
-    tokenizer = AutoTokenizer.from_pretrained(args.target_model)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # ---- 3. LoRA config ------------------------------------------------
+    # ---- 4. LoRA config ------------------------------------------------
     peft_config = None
     if not args.no_lora:
         target_modules = args.lora_target_modules
@@ -154,7 +154,7 @@ def main():
         )
         print(f"  LoRA: r={args.lora_r}, alpha={args.lora_alpha}, targets={target_modules}")
 
-    # ---- 4. Training config --------------------------------------------
+    # ---- 5. Training config --------------------------------------------
     if args.output_dir is None:
         args.output_dir = f"./outputs/dg_offline_{time_str}"
     if args.run_name is None:
@@ -181,6 +181,7 @@ def main():
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
         num_train_epochs=args.num_train_epochs,
+        max_steps=args.max_steps,
         save_steps=args.save_steps,
         max_grad_norm=args.max_grad_norm,
         report_to=args.report_to,
@@ -188,7 +189,7 @@ def main():
         seed=args.seed,
     )
 
-    # ---- 5. Create trainer & train -------------------------------------
+    # ---- 6. Create trainer & train -------------------------------------
     def _dummy_reward(prompts, completions, **kwargs):
         return [0.0] * len(completions)
 

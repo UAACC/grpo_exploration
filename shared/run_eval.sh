@@ -39,6 +39,7 @@ RUNS="${RUNS:-5}"
 N_SAMPLES="${N_SAMPLES:-16}"
 TEMP="${TEMP:-0.6}"
 MAX_PROBS="${MAX_PROBS:-}"
+SEED="${SEED:-42}"
 
 SCRATCH="${SCRATCH:-/scratch/mrli}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng"
@@ -56,7 +57,7 @@ case "${DATASET}" in
     math)   export HF_DATASETS_CACHE="${SCRATCH}/datasets/MATH" ;;
     gsm8k)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/GSM8K" ;;
     svamp)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/SVAMP" ;;
-    aime)   export HF_DATASETS_CACHE="${SCRATCH}/datasets/AIME" ;;
+    asdiv)  export HF_DATASETS_CACHE="${SCRATCH}/datasets/ASDIV" ;;
     *)      export HF_DATASETS_CACHE="${SCRATCH}/datasets/${DATASET}" ;;
 esac
 
@@ -65,13 +66,14 @@ mkdir -p "${WORK_DIR}/shared/logs"
 cd "${WORK_DIR}"
 
 # Build the command
-CMD="python shared/eval_unified.py \
+CMD="python Math_Verifier/eval_unified.py \
     --model_path ${MODEL} \
     --dataset ${DATASET} \
     --mode ${MODE} \
     --runs ${RUNS} \
     --n_samples ${N_SAMPLES} \
-    --temperature ${TEMP}"
+    --temperature ${TEMP} \
+    --seed ${SEED}"
 
 if [ "${MERGE}" = "1" ] && [ -n "${BASE}" ]; then
     CMD="${CMD} --merge_lora --base_model ${BASE}"
@@ -80,8 +82,23 @@ if [ "${MERGE}" = "1" ] && [ -n "${BASE}" ]; then
     fi
 fi
 
+# ASDiv needs manual test split (no proper test split in HF)
+if [ "${DATASET}" = "asdiv" ]; then
+    CMD="${CMD} --manual_split test"
+fi
+
 if [ -n "${MAX_PROBS}" ]; then
     CMD="${CMD} --max_problems ${MAX_PROBS}"
+fi
+
+# Override dataset registry defaults for verbose R1-trained students. Without
+# these, MATH defaults to max_tokens=2048 which truncates R1-style reasoning
+# chains before \boxed{}.
+if [ -n "${MAX_TOKENS:-}" ]; then
+    CMD="${CMD} --max_tokens ${MAX_TOKENS}"
+fi
+if [ -n "${MAX_MODEL_LEN:-}" ]; then
+    CMD="${CMD} --max_model_len ${MAX_MODEL_LEN}"
 fi
 
 echo "=== Unified eval ==="
@@ -89,6 +106,7 @@ echo "  Dataset: ${DATASET}"
 echo "  Model: ${MODEL}"
 echo "  Mode: ${MODE}"
 echo "  Runs: ${RUNS}, N: ${N_SAMPLES}, Temp: ${TEMP}"
+echo "  max_tokens: ${MAX_TOKENS:-(registry default)}, max_model_len: ${MAX_MODEL_LEN:-(registry default)}"
 echo ""
 
 eval ${CMD}

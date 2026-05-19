@@ -66,18 +66,18 @@ def extract_numeric_answer(text: str) -> str | None:
     if "####" in text:
         after = text.split("####")[-1].strip()
         after = after.replace(",", "").strip()
-        match = re.search(r"-?[\d.]+", after)
+        match = re.search(r"-?\d+\.?\d*", after)
         if match:
             return match.group()
     # Try \boxed{}
     boxed = extract_boxed_answer(text)
     if boxed is not None:
         boxed = boxed.replace(",", "").strip()
-        match = re.search(r"-?[\d.]+", boxed)
+        match = re.search(r"-?\d+\.?\d*", boxed)
         if match:
             return match.group()
-    # Fallback: last number in the text
-    numbers = re.findall(r"-?[\d.]+", text)
+    # Fallback: last number in the text (must contain at least one digit)
+    numbers = re.findall(r"-?\d+\.?\d*", text)
     return numbers[-1] if numbers else None
 
 
@@ -85,15 +85,42 @@ def extract_numeric_answer(text: str) -> str | None:
 # Answer checking
 # ---------------------------------------------------------------------------
 
-def check_math(pred_text: str, gold_answer: str) -> bool:
-    """MATH-style: extract boxed answer, verify with math_verify."""
-    from math_verify import parse, verify
+_MATH_EQUIV_TIMEOUT_SEC = 5
+
+
+class _MathEquivTimeout(Exception):
+    pass
+
+
+def _alarm_handler(signum, frame):
+    raise _MathEquivTimeout()
+
+
+def check_math(pred_text: str, gold_answer: str, question: str = "") -> bool:
+    """MATH-style: route through Math_Verifier (DeepSeek-Math port).
+
+    Multi-candidate `\\boxed{}` extraction with `strip_string` LaTeX
+    canonicalization and sympy-based equivalence. See docs/eval_methodology.md.
+
+    Wrapped in a SIGALRM-based per-call timeout (5s) because pathological
+    inputs (e.g., untrained-baseline outputs with malformed LaTeX) can wedge
+    sympy.parse_latex. Hangs are treated as wrong. Single-thread only.
+    """
+    import os as _os, sys as _sys, signal as _signal
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv_multi
+
+    old_handler = _signal.signal(_signal.SIGALRM, _alarm_handler)
+    _signal.alarm(_MATH_EQUIV_TIMEOUT_SEC)
     try:
-        pred = parse(extract_boxed_answer(pred_text))
-        gold = parse(gold_answer)
-        return verify(gold, pred) is True
-    except Exception:
+        return is_equiv_multi(question, pred_text, gold_answer)
+    except (_MathEquivTimeout, Exception):
         return False
+    finally:
+        _signal.alarm(0)
+        _signal.signal(_signal.SIGALRM, old_handler)
 
 
 def check_numeric(pred_text: str, gold_answer: str) -> bool:
@@ -204,8 +231,8 @@ _register(DatasetConfig(
     extract_answer=extract_numeric_answer,
     check_answer=check_numeric,
     reward_func=reward_numeric,
-    max_tokens=512,
-    max_model_len=1024,
+    max_tokens=1024,
+    max_model_len=2048,
     num_test=300,
     difficulty="easy",
     build_question=_svamp_build_question,
@@ -234,8 +261,8 @@ _register(DatasetConfig(
     extract_answer=extract_numeric_answer,
     check_answer=check_numeric,
     reward_func=reward_numeric,
-    max_tokens=512,
-    max_model_len=1024,
+    max_tokens=1024,
+    max_model_len=2048,
     num_test=461,              # 2305 * 0.2 ≈ 461
     difficulty="easy-medium",
     build_question=_asdiv_build_question,

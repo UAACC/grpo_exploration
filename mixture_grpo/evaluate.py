@@ -1,6 +1,13 @@
-"""Evaluate a (possibly LoRA) checkpoint on GSM8K or MATH test split using vLLM."""
+"""Evaluate a (possibly LoRA) checkpoint on GSM8K or MATH test split using vLLM.
+
+MATH eval uses DeepSeek's `is_equiv_multi` (multi-candidate sympy-based
+equivalence). See `shared/math_eval.py` for the port and the project's
+multi-teacher experiment plan for why this matters.
+"""
 
 import argparse
+import os
+import sys
 
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -14,6 +21,10 @@ from configs import (
     DEFAULT_TARGET_MODEL,
     extract_gsm8k_answer, extract_boxed_answer,
 )
+
+# Project-wide canonical math equivalence checker (DeepSeek-Math port).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from Math_Verifier import is_equiv_multi  # noqa: E402
 
 
 def parse_args():
@@ -65,12 +76,13 @@ def check_gsm8k(pred_text: str, gold_text: str) -> bool:
     return False
 
 
-def check_math(pred_text: str, gold_text: str) -> bool:
-    from math_verify import parse, verify
+def check_math(pred_text: str, gold_text: str, question: str = "") -> bool:
+    """MATH equivalence using DeepSeek's `is_equiv_multi` (sympy parse_latex +
+    simplify, after `strip_string` LaTeX canonicalization, with multi-candidate
+    extraction across every \\boxed{} in pred_text). See shared/math_eval.py.
+    """
     try:
-        pred = parse(extract_boxed_answer(pred_text))
-        gold = parse(gold_text)
-        return verify(gold, pred) is True
+        return is_equiv_multi(question, pred_text, gold_text)
     except Exception:
         return False
 
@@ -121,7 +133,11 @@ def main():
             {"role": "user", "content": item[question_field]},
         ]
         formatted = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-        eval_data.append({"prompt": formatted, "answer": item[answer_field]})
+        eval_data.append({
+            "prompt": formatted,
+            "answer": item[answer_field],
+            "question": item[question_field],  # passed to check_math for is_equiv_multi
+        })
 
     prompts = [item["prompt"] for item in eval_data]
 
@@ -142,7 +158,11 @@ def main():
         lengths = []
         for i, output in enumerate(outputs):
             gen_text = output.outputs[0].text
-            if checker(gen_text, eval_data[i]["answer"]):
+            if is_math:
+                ok = check_math(gen_text, eval_data[i]["answer"], eval_data[i]["question"])
+            else:
+                ok = check_gsm8k(gen_text, eval_data[i]["answer"])
+            if ok:
                 correct += 1
             lengths.append(len(output.outputs[0].token_ids))
 

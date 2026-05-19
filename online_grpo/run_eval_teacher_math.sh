@@ -17,7 +17,7 @@ set -e
 
 SCRATCH="/scratch/mrli"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/online_grpo"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
 MODEL_DIR="${SCRATCH}/models/Qwen2.5-Math-7B-Instruct"
 CKPT_DIR="${SCRATCH}/checkpoints/online_grpo_math_teacher_7B"

@@ -23,21 +23,21 @@ TEACHER_DIR="${TEACHER_DIR:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"
 WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/offline_grpo"
 SCRATCH="/scratch/mrli"
 CONFIG_DIR="${WORK_DIR}/configs"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 
-ROLLOUT_PATH="${SCRATCH}/rollouts/${DATASET_TYPE}_teacher/rollouts_${DATASET_TYPE}.jsonl"
-OUTPUT_DIR="${SCRATCH}/checkpoints/offline_grpo_${DATASET_TYPE}"
-MERGED_DIR="${SCRATCH}/merged/offline_grpo_${DATASET_TYPE}_merged"
+ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/${DATASET_TYPE}_teacher/rollouts_${DATASET_TYPE}.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/offline_grpo_${DATASET_TYPE}}"
+MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/offline_grpo_${DATASET_TYPE}_merged}"
 
-# Dataset-specific defaults
+# Dataset-specific defaults (overridable via env)
 if [ "${DATASET_TYPE}" = "math" ]; then
-    MAX_COMPLETION=2048
-    MAX_MODEL_LEN=3072
-    DATASET_CACHE="/scratch/mrli/datasets/MATH"
+    MAX_COMPLETION="${MAX_COMPLETION:-2048}"
+    MAX_MODEL_LEN="${MAX_MODEL_LEN:-3072}"
+    DATASET_CACHE="${DATASET_CACHE:-/scratch/mrli/datasets/MATH}"
 else
-    MAX_COMPLETION=1024
-    MAX_MODEL_LEN=2048
-    DATASET_CACHE="/scratch/mrli/datasets/GSM8K"
+    MAX_COMPLETION="${MAX_COMPLETION:-1024}"
+    MAX_MODEL_LEN="${MAX_MODEL_LEN:-2048}"
+    DATASET_CACHE="${DATASET_CACHE:-/scratch/mrli/datasets/GSM8K}"
 fi
 
 # ── Activate environment ─────────────────────────────────────────

@@ -17,7 +17,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_HERE)
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "shared"))
 from datasets_registry import get_dataset_config, load_eval_data, list_datasets
 
 
@@ -27,19 +29,43 @@ def parse_args():
     p.add_argument("--base_model", type=str, default=None)
     p.add_argument("--merge_lora", action="store_true")
     p.add_argument("--merged_output", type=str, default=None)
-    p.add_argument("--dataset", type=str, required=True, choices=list_datasets())
+    # Dataset selection: --dataset is canonical; --dataset_type is the legacy alias
+    # accepted by mixture_grpo/evaluate.py, kept here for backwards compatibility
+    # with existing bash wrappers.
+    p.add_argument("--dataset", type=str, default=None, choices=list_datasets())
+    p.add_argument("--dataset_type", type=str, default=None, choices=list_datasets(),
+                    help="Legacy alias for --dataset.")
     p.add_argument("--mode", type=str, default="greedy",
                     choices=["greedy", "best_of_n", "both"])
     p.add_argument("--runs", type=int, default=5)
     p.add_argument("--n_samples", type=int, default=16)
     p.add_argument("--temperature", type=float, default=0.6)
+    # Legacy length / sampling overrides — when set, take precedence over cfg defaults.
+    p.add_argument("--max_tokens", type=int, default=None,
+                    help="Override cfg.max_tokens if set.")
+    p.add_argument("--max_model_len", type=int, default=None,
+                    help="Override cfg.max_model_len if set.")
+    p.add_argument("--top_p", type=float, default=1.0)
+    p.add_argument("--top_k", type=int, default=-1)
+    p.add_argument("--split", type=str, default="test",
+                    help="Dataset split (legacy alias kept for bash wrappers).")
     p.add_argument("--max_problems", type=int, default=None)
     p.add_argument("--manual_split", type=str, default=None, choices=["train", "test"],
                     help="For datasets without proper test split (e.g., asdiv).")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--tensor_parallel_size", type=int, default=1)
     p.add_argument("--gpu_memory_utilization", type=float, default=0.95)
-    return p.parse_args()
+    p.add_argument("--save_completions", type=str, default=None,
+                    help="If set, save per-problem records (one JSONL line per "
+                    "(run, problem) pair: problem, gold, generated_text, candidates, "
+                    "completion_token_count, correct).")
+    args = p.parse_args()
+    # Resolve --dataset / --dataset_type
+    if args.dataset is None and args.dataset_type is None:
+        p.error("must pass --dataset or --dataset_type")
+    if args.dataset is None:
+        args.dataset = args.dataset_type
+    return args
 
 
 def merge_lora(base_model, adapter_path, output_path):
@@ -69,19 +95,59 @@ def build_prompts(problems, cfg, tokenizer):
     return prompts
 
 
-def run_greedy_eval(llm, prompts, problems, cfg, runs, seed):
+def run_greedy_eval(llm, prompts, problems, cfg, runs, seed, max_tokens=None,
+                    save_completions=None):
+    if max_tokens is None:
+        max_tokens = cfg.max_tokens
+
+    save_fp = None
+    if save_completions:
+        os.makedirs(os.path.dirname(save_completions) or ".", exist_ok=True)
+        save_fp = open(save_completions, "w", encoding="utf-8")
+
+    # Optional candidate extractor for the JSONL (for inspection only).
+    try:
+        sys.path.insert(0, _PROJECT_ROOT)
+        from Math_Verifier import extract_math_answer
+    except Exception:
+        extract_math_answer = None
+
     all_accs = []
     for run_idx in tqdm(range(runs), desc="Greedy runs"):
         run_seed = seed + run_idx
-        params = SamplingParams(temperature=0.0, max_tokens=cfg.max_tokens, seed=run_seed)
+        params = SamplingParams(temperature=0.0, max_tokens=max_tokens, seed=run_seed)
         outputs = llm.generate(prompts, params)
-        correct = sum(
-            1 for i, out in enumerate(outputs)
-            if cfg.check_answer(out.outputs[0].text, problems[i]["answer"])
-        )
+        correct = 0
+        for i, out in enumerate(outputs):
+            text = out.outputs[0].text
+            ok = cfg.check_answer(text, problems[i]["answer"])
+            if ok:
+                correct += 1
+            if save_fp is not None:
+                import json as _json
+                cand = []
+                if extract_math_answer is not None:
+                    try:
+                        cand = extract_math_answer(problems[i]["problem"], text, task=cfg.name)
+                    except Exception:
+                        pass
+                save_fp.write(_json.dumps({
+                    "run": run_idx,
+                    "seed": run_seed,
+                    "problem_id": i,
+                    "problem": problems[i]["problem"],
+                    "gold": problems[i]["answer"],
+                    "generated_text": text,
+                    "candidates": cand,
+                    "completion_token_count": len(out.outputs[0].token_ids),
+                    "correct": ok,
+                }) + "\n")
         acc = correct / len(outputs)
         all_accs.append(acc)
         print(f"  Run {run_idx+1}: accuracy={acc:.4f} (seed={run_seed})")
+    if save_fp is not None:
+        save_fp.close()
+        print(f"  Saved per-problem records to {save_completions}")
 
     mean_acc = sum(all_accs) / len(all_accs)
     print(f"\nGreedy accuracy: {mean_acc:.4f} (over {runs} run(s))")
@@ -92,9 +158,13 @@ def run_greedy_eval(llm, prompts, problems, cfg, runs, seed):
     return mean_acc
 
 
-def run_best_of_n(llm, prompts, problems, cfg, n_samples, temperature, seed):
+def run_best_of_n(llm, prompts, problems, cfg, n_samples, temperature, seed,
+                  max_tokens=None, top_p=1.0, top_k=-1):
+    if max_tokens is None:
+        max_tokens = cfg.max_tokens
     params = SamplingParams(
-        temperature=temperature, n=n_samples, max_tokens=cfg.max_tokens, seed=seed,
+        temperature=temperature, top_p=top_p, top_k=top_k,
+        n=n_samples, max_tokens=max_tokens, seed=seed,
     )
     print(f"Generating {len(prompts)} x {n_samples} = {len(prompts)*n_samples} completions...")
     outputs = llm.generate(prompts, params)
@@ -163,12 +233,13 @@ def main():
         model_name = merge_lora(args.base_model, args.model_path, output)
 
     # Load vLLM
+    max_model_len = args.max_model_len if args.max_model_len is not None else cfg.max_model_len
     llm = LLM(
         model=model_name,
         tensor_parallel_size=args.tensor_parallel_size,
         dtype="auto",
         trust_remote_code=True,
-        max_model_len=cfg.max_model_len,
+        max_model_len=max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
         enforce_eager=False,
     )
@@ -183,11 +254,14 @@ def main():
 
     # Eval
     if args.mode in ("greedy", "both"):
-        run_greedy_eval(llm, prompts, problems, cfg, args.runs, args.seed)
+        run_greedy_eval(llm, prompts, problems, cfg, args.runs, args.seed,
+                        max_tokens=args.max_tokens,
+                        save_completions=args.save_completions)
 
     if args.mode in ("best_of_n", "both"):
         run_best_of_n(llm, prompts, problems, cfg, args.n_samples,
-                      args.temperature, args.seed)
+                      args.temperature, args.seed,
+                      max_tokens=args.max_tokens, top_p=args.top_p, top_k=args.top_k)
 
     print("\n=== Done ===")
 

@@ -74,7 +74,7 @@ train)
 
 # ── Evaluation ────────────────────────────────────────────────────────
 eval)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
     echo "=== Evaluating trained model on MATH (LoRA merged) ==="
     MERGED_DIR="${SCRATCH}/merged/online_grpo_math_merged"
     python "${EVAL_SCRIPT}" \
@@ -91,7 +91,7 @@ eval)
     ;;
 
 eval-baseline)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
     echo "=== Evaluating baseline on MATH ==="
     python "${EVAL_SCRIPT}" \
         --model_path "${MODEL_DIR}" \
@@ -104,7 +104,7 @@ eval-baseline)
     ;;
 
 eval-checkpoints)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
     echo "=== Evaluating multiple checkpoints on MATH ==="
     for step in 1000 2000 3000 5000 7000; do
         ckpt="${OUTPUT_DIR}/checkpoint-${step}"

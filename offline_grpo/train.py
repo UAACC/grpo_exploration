@@ -12,6 +12,18 @@ import json
 import os
 from datetime import datetime
 
+# Disable accelerate's automatic fp32 cast of model outputs BEFORE any
+# accelerate / trl / transformers import that might capture the function
+# reference. With mixed_precision=bf16 set in the yaml, the model itself
+# runs in bf16, but accelerate wraps `forward` with `convert_outputs_to_fp32`,
+# which does `tensor.float()` on the logits. At long context that's
+# `[batch * num_gen, seq, vocab] * 4 bytes` for *each* of student + reference,
+# i.e. ~37 GiB per step at 8K seq × 152K vocab × 4 generations -> OOM on L40s.
+# Making the cast a no-op leaves logits in bf16 throughout; the trainer's
+# loss computation tolerates bf16 inputs.
+import accelerate.utils.operations as _accel_ops
+_accel_ops.convert_to_fp32 = lambda tensor: tensor
+
 import torch
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
@@ -84,12 +96,24 @@ def main():
     args = parse_args()
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-    # ---- 1. Load & process offline rollouts ----------------------------
-    # Get student vocab size to filter out-of-vocab teacher tokens
+    # ---- 1. Load student tokenizer (needed by the rollout-safety check) -
+    tokenizer = AutoTokenizer.from_pretrained(args.target_model)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # ---- 2. Load & process offline rollouts ----------------------------
+    # `vocab_size` truncates teacher IDs that exceed the student's embedding
+    # rows. Passing `student_tokenizer` additionally enforces that the
+    # remaining IDs round-trip cleanly under the student tokenizer (the
+    # Path-A safety check) — we refuse to feed teacher IDs into the student
+    # forward pass when the tokenizers disagree at any in-range ID.
     from transformers import AutoConfig
     model_config = AutoConfig.from_pretrained(args.target_model)
     print(f"Loading rollouts from {args.rollout_path} ...")
-    records = load_rollouts(args.rollout_path, vocab_size=model_config.vocab_size)
+    records = load_rollouts(
+        args.rollout_path,
+        vocab_size=model_config.vocab_size,
+        student_tokenizer=tokenizer,
+    )
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
@@ -109,9 +133,6 @@ def main():
         device_map=None,
     )
     model.config.use_cache = False
-
-    tokenizer = AutoTokenizer.from_pretrained(args.target_model)
-    tokenizer.pad_token = tokenizer.eos_token
 
     # ---- 3. LoRA config ------------------------------------------------
     peft_config = None

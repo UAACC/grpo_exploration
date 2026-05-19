@@ -20,7 +20,7 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/offline_grpo/evaluate.py"
+EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
 SCRATCH="/scratch/mrli"
 
 # Models to evaluate

@@ -60,7 +60,17 @@ class BCDataset(Dataset):
         print(f"  BCDataset: {len(self.samples)} samples, max_length={max_length}")
 
     def _build_ids(self, rec: dict) -> tuple[list[int], list[int]]:
-        """Tokenize the prompt via chat template, return (prompt_ids, completion_ids)."""
+        """Tokenize prompt + response under the STUDENT tokenizer (Path A).
+
+        Re-tokenizing the teacher's *response text* under the student tokenizer
+        produces student-vocab `comp_ids` that mean exactly what the response
+        text says when the student forward-passes on them. Reading the JSONL's
+        pre-stored `completion_ids` directly (Path B) is a silent-corruption
+        footgun: those IDs are in the *teacher's* vocab, and any teacher token
+        that maps to a different string in the student's vocab — including
+        the R1-Distill `<think>` (151648) and `</think>` (151649) markers —
+        becomes garbage cross-entropy targets. See docs/eval_methodology.md.
+        """
         chat = [
             {"role": "system", "content": rec["system_prompt"]},
             {"role": "user", "content": rec["problem"]},
@@ -69,7 +79,9 @@ class BCDataset(Dataset):
             chat, tokenize=False, add_generation_prompt=True,
         )
         prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        comp_ids = rec["completion_ids"]
+        # Re-tokenize the teacher response under the student tokenizer.
+        # `rec["response"]` is the decoded text from vLLM (special tokens stripped).
+        comp_ids = self.tokenizer.encode(rec["response"], add_special_tokens=False)
         return prompt_ids, comp_ids
 
     def __len__(self):
@@ -117,10 +129,18 @@ class BCCollator:
 
 
 def _compute_reward_math(extracted: str | None, gt: str) -> float:
-    """MATH reward via math_verify. Returns 2.0 for correct, 0.0 otherwise."""
-    from math_verify import parse, verify
+    """MATH reward via Math_Verifier (DeepSeek-Math port). 2.0 correct, 0.0 wrong.
+
+    Uses single-candidate `is_equiv` since callers pass a pre-extracted answer.
+    See docs/eval_methodology.md for the upgrade history.
+    """
+    import os as _os, sys as _sys
+    _root = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..")
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    from Math_Verifier import is_equiv
     try:
-        return 2.0 if verify(parse(extracted), parse(gt)) is True else 0.0
+        return 2.0 if is_equiv(extracted, gt) else 0.0
     except Exception:
         return 0.0
 
@@ -150,8 +170,8 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
     """Load rollout JSONL into a flat list of per-completion records.
 
     Auto-detects dataset type from the `dataset_type` field in the JSONL
-    (falls back to "math" if missing). Uses math_verify for MATH and numeric
-    comparison for GSM8K.
+    (falls back to "math" if missing). Uses Math_Verifier (DeepSeek-Math port)
+    for MATH and numeric comparison for GSM8K-style datasets.
     """
     from configs import extract_boxed_answer
 
@@ -189,7 +209,7 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
                         if boxed is not None:
                             reward = _compute_reward_gsm8k(boxed, gt)
                 else:
-                    # MATH (default): extract_boxed_answer as fallback, then math_verify
+                    # MATH (default): extract_boxed_answer as fallback, then Math_Verifier
                     if extracted is None:
                         extracted = extract_boxed_answer(run["response"])
                     reward = _compute_reward_math(extracted, gt)
@@ -199,7 +219,9 @@ def _load_rollouts(jsonl_path: str, vocab_size: int | None = None) -> list[dict]
                     "problem": item["original_problem"],
                     "ground_truth": gt,
                     "system_prompt": item.get("system_prompt", MATH_SYSTEM_PROMPT),
-                    "completion_ids": cids,
+                    # `response` is the canonical training input; BCDataset
+                    # re-tokenizes it under the student tokenizer (Path A).
+                    "response": run["response"],
                     "reward": reward,
                 })
 

@@ -15,7 +15,7 @@ export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
-python3 /project/aip-szepesva/mrli/backup_dongheng/offline_grpo/evaluate.py \
+python3 /project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py \
     --model_path /scratch/mrli/checkpoints/offline_grpo_math_teacher_self \
     --base_model /scratch/mrli/models/Qwen2.5-Math-7B-Instruct \
     --merge_lora \
