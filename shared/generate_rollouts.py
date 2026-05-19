@@ -143,6 +143,7 @@ def main():
                 "dataset_type": cfg.name,
                 "runs": runs,
             }) + "\n")
+            f.flush()
 
     print(f"  Written {len(outputs)} problems to {args.output_path}")
     print(f"  Teacher accuracy: {total_correct}/{total_completions} "

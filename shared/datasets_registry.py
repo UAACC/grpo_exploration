@@ -242,6 +242,25 @@ _register(DatasetConfig(
 ))
 
 
+# --- AceReason-Math (NVIDIA, MATH-style boxed answers, train-only, manual 80/20 split) ---
+_register(DatasetConfig(
+    name="acereason",
+    hf_path="nvidia/AceReason-Math",
+    hf_config=None,
+    split_test="train",        # only has train; we split it manually
+    split_train="train",       # same — load_eval_data handles the split
+    question_field="problem",
+    answer_field="answer",
+    system_prompt=MATH_SYSTEM_PROMPT,
+    extract_answer=extract_boxed_answer,
+    check_answer=check_math,
+    reward_func=reward_math,
+    max_tokens=2048,
+    max_model_len=3072,
+    num_test=9917,             # 49585 * 0.2 ≈ 9917
+    difficulty="hard",
+))
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -278,13 +297,28 @@ def load_eval_data(cfg: DatasetConfig, split: str | None = None,
             reproducibility.
         manual_split_seed: seed for the manual split shuffle (default: 42)
     """
-    from datasets import load_dataset
+    import glob as _glob
+    import os
+    from datasets import load_dataset, Dataset
 
     split = split or cfg.split_test
-    if cfg.hf_config:
-        ds = load_dataset(cfg.hf_path, cfg.hf_config, split=split)
-    else:
-        ds = load_dataset(cfg.hf_path, split=split)
+    try:
+        if cfg.hf_config:
+            ds = load_dataset(cfg.hf_path, cfg.hf_config, split=split)
+        else:
+            ds = load_dataset(cfg.hf_path, split=split)
+    except ConnectionError:
+        # Newer Hub datasets (no custom .py script) require a Hub API call even
+        # in offline mode to discover data files. Fall back to loading the
+        # cached arrow file directly from HF_DATASETS_CACHE.
+        cache_dir = os.environ.get("HF_DATASETS_CACHE", "")
+        matches = [
+            f for f in _glob.glob(os.path.join(cache_dir, "**", "*.arrow"), recursive=True)
+            if f"-{split}." in os.path.basename(f)
+        ]
+        if not matches:
+            raise
+        ds = Dataset.from_file(matches[0])
 
     problems = []
     for i, item in enumerate(ds):

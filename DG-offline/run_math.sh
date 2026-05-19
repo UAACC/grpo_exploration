@@ -6,8 +6,8 @@
 #   sbatch run_math.sh                    # default eta=1.0
 #   DG_ETA=0.5 sbatch run_math.sh        # custom eta
 #   DG_ETA=2.0 sbatch run_math.sh        # softer gate
-#
-#SBATCH --account=aip-szepesva
+#   aip-szepesva
+#SBATCH --account=aip-xt7
 #SBATCH --job-name=dg-offline-math
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
@@ -20,15 +20,15 @@
 set -euo pipefail
 
 # ---- Paths (configurable via env vars) --------------------------------
-SCRATCH="${SCRATCH:-/scratch/mrli}"
-WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/DG-offline"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/mixture_grpo/evaluate.py"
+SCRATCH="${SCRATCH:-/scratch/shuai14}"
+WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline"
+EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
 
-STUDENT_MODEL="${STUDENT_MODEL:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
-TEACHER_MODEL="${TEACHER_MODEL:-${SCRATCH}/models/Qwen2.5-Math-7B-Instruct}"
-ROLLOUT_PATH="${ROLLOUT_PATH:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/dg_offline_math}"
-MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/dg_offline_math}"
+STUDENT_MODEL="${STUDENT_MODEL:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
+TEACHER_MODEL="${TEACHER_MODEL:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"
+ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/mrli/rollouts/math_teacher/rollouts_full.jsonl}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/DG_offline_math}"
+MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/DG_offline_math}"
 
 # ---- DG hyperparameters -----------------------------------------------
 #if not set, default to 1.0 (no gating)
@@ -37,15 +37,16 @@ DG_GATING="${DG_GATING:-completion}"
 
 # ---- Environment ------------------------------------------------------
 module load python/3.11 cuda/12.6 arrow opencv
-source /project/aip-szepesva/mrli/backup_dongheng/.venv/bin/activate
-export HF_HOME="${SCRATCH}"
-export HF_DATASETS_CACHE="${SCRATCH}/datasets/MATH"
+source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
+export HF_HOME="/scratch/mrli"
+export HF_DATASETS_CACHE="/scratch/mrli/datasets/MATH"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
-if [ -f "/project/aip-szepesva/mrli/backup_dongheng/offline_grpo/.wandb_key" ]; then
-    export WANDB_API_KEY=$(cat /project/aip-szepesva/mrli/backup_dongheng/offline_grpo/.wandb_key)
+if [ -f "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key" ]; then
+    export WANDB_API_KEY=$(cat /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key)
+    echo "Loaded Weights & Biases API key from file."
 fi
 
 mkdir -p "${WORK_DIR}/logs"
@@ -62,9 +63,9 @@ echo "  Output: ${CHECKPOINT_DIR}"
 
 # ---- Train -------------------------------------------------------------
 CMD="${1:-train}"
-
+# /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/
 if [ "$CMD" = "train" ]; then
-    accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
+    CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
         train.py \
         --target_model "${STUDENT_MODEL}" \
         --behavior_model "${TEACHER_MODEL}" \
