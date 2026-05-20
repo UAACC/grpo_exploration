@@ -6,6 +6,7 @@
 !offline_grpo/
 !online_grpo/
 !DG-offline/
+!dr_mixture_grpo/
 !bc/
 !Math_Verifier/
 
@@ -25,6 +26,7 @@ docs/*
 !offline_grpo/**
 !online_grpo/**
 !DG-offline/**
+!dr_mixture_grpo/**
 !bc/**
 !shared/
 !shared/**
