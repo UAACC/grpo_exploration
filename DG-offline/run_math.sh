@@ -20,15 +20,9 @@
 set -euo pipefail
 
 # ---- Paths (configurable via env vars) --------------------------------
-<<<<<<< HEAD
 SCRATCH="${SCRATCH:-/scratch/shuai14}"
 WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
-=======
-SCRATCH="${SCRATCH:-/scratch/mrli}"
-WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/DG-offline"
-EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
->>>>>>> origin/main
 
 STUDENT_MODEL="${STUDENT_MODEL:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
 TEACHER_MODEL="${TEACHER_MODEL:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"

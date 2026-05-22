@@ -25,7 +25,7 @@ SCRATCH="/scratch/shuai14"
 CONFIG_DIR="${WORK_DIR}/configs"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/Math_Verifier/eval_unified.py"
 
-ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/mrli/rollouts/${DATASET_TYPE}_teacher/rollouts_${DATASET_TYPE}.jsonl}"
+ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/mrli/rollouts/math_teacher/rollouts_full.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/offline_grpo_${DATASET_TYPE}}"
 MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/offline_grpo_${DATASET_TYPE}_merged}"
 
