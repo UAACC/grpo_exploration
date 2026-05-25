@@ -13,7 +13,7 @@
 # Optional env vars: K_S (default 5), BASELINE_TEMP (0.7), MAX_STEPS (-1),
 # OUTPUT_DIR, ROLLOUT, MAX_COMPL, MODEL_DIR.
 #
-#SBATCH --account=aip-szepesva
+#SBATCH --account=aip-xt7
 #SBATCH --time=24:00:00
 #SBATCH --gpus-per-node=l40s:4
 #SBATCH --cpus-per-task=64
@@ -24,9 +24,9 @@
 set -e
 
 DATASET="${DATASET:?Set DATASET env var (math, gsm8k, svamp, asdiv)}"
-SCRATCH="${SCRATCH:-/scratch/mrli}"
-WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng"
-MODEL_DIR="${MODEL_DIR:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
+SCRATCH="/scratch/mrli"
+WORK_DIR="/home/shuai14/projects/aip-szepesva/shuai14/DG_LLM/grpo_exploration"
+MODEL_DIR="${MODEL_DIR:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
 
 case "${DATASET}" in
     math)
@@ -50,13 +50,13 @@ case "${DATASET}" in
         ;;
 esac
 
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/dr_mixture_grpo_${DATASET}}"
+OUTPUT_DIR="${OUTPUT_DIR:-/scratch/shuai14/checkpoints/dr_mixture_grpo_${DATASET}}"
 K_S="${K_S:-5}"
 BASELINE_TEMP="${BASELINE_TEMP:-0.7}"
 MAX_STEPS="${MAX_STEPS:--1}"
 
 module load python/3.11 cuda/12.6 arrow opencv
-source "${WORK_DIR}/.venv/bin/activate"
+source "/project/aip-szepesva/shuai14/verifiers/.venv/bin/activate"
 
 export HF_HOME="${SCRATCH}"
 case "${DATASET}" in
@@ -68,9 +68,9 @@ esac
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
-export WANDB_API_KEY=$(cat "${WORK_DIR}/offline_grpo/.wandb_key")
+export WANDB_API_KEY=$(cat "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/RWR-offline/.wandb_key")
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-export WANDB_PROJECT="dr-mixture-grpo"
+export WANDB_PROJECT="mixture-grpo-${DATASET}"
 export WANDB_RUN_NAME="dr-mixture-${DATASET}-$(date +%m%d)"
 
 cd "${WORK_DIR}"

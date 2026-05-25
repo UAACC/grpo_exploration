@@ -21,13 +21,33 @@ MODEL_DIR="${MODEL_DIR:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
 TEACHER_DIR="${TEACHER_DIR:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"
 
 WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/offline_grpo"
-SCRATCH="/scratch/shuai14"
+SCRATCH="/scratch/mrli"
 CONFIG_DIR="${WORK_DIR}/configs"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/Math_Verifier/eval_unified.py"
 
-ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/mrli/rollouts/${DATASET_TYPE}_teacher/rollouts_${DATASET_TYPE}.jsonl}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/offline_grpo_${DATASET_TYPE}}"
-MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/offline_grpo_${DATASET_TYPE}_merged}"
+case "${DATASET_TYPE}" in
+    math)
+        ROLLOUT_PATH="${ROLLOUT:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl}"
+        MAX_COMPL="${MAX_COMPL:-2048}"
+        ;;
+    gsm8k)
+        ROLLOUT_PATH="${ROLLOUT:-${SCRATCH}/rollouts/gsm8k_teacher/rollouts_gsm8k.jsonl}"
+        MAX_COMPL="${MAX_COMPL:-1024}"
+        ;;
+    svamp)
+        ROLLOUT_PATH="${ROLLOUT:-${SCRATCH}/rollouts/svamp_teacher/rollouts_svamp.jsonl}"
+        MAX_COMPL="${MAX_COMPL:-1024}"
+        ;;
+    asdiv)
+        ROLLOUT_PATH="${ROLLOUT:-${SCRATCH}/rollouts/asdiv_teacher/rollouts_asdiv.jsonl}"
+        MAX_COMPL="${MAX_COMPL:-1024}"
+        ;;
+    *)
+        echo "Unknown DATASET=${DATASET}"; exit 1
+        ;;
+esac
+OUTPUT_DIR="/scratch/shuai14/checkpoints/offline_grpo_${DATASET_TYPE}"
+MERGED_DIR="/scratch/shuai14/merged/offline_grpo_${DATASET_TYPE}_merged}"
 
 # Dataset-specific defaults (overridable via env)
 if [ "${DATASET_TYPE}" = "math" ]; then
@@ -107,9 +127,9 @@ train)
         --report_to wandb
 
     echo "=== Training complete ==="
-    ;;
+#     ;;
 
-eval)
+# eval)
     CKPT="${2:-}"
     if [ -n "${CKPT}" ]; then
         EVAL_PATH="${OUTPUT_DIR}/${CKPT}"
