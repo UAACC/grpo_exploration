@@ -1,8 +1,7 @@
-"""Delightful offline GRPO trainer.
+"""AWR offline GRPO trainer.
 
-Replaces importance-sampling ratios and PPO clipping with a sigmoid gate
-based on "delight" = advantage x surprisal. Surprisal is computed under the
-learner's current policy, so no behavior policy logprobs are needed.
+Replaces importance-sampling ratios and PPO clipping with a reward gate
+based on signed correctness rewards.
 
 The key change from Reward Weighted Regression:
   - old_per_token_logps is set to the CURRENT policy's logprobs (not behavior's),
@@ -20,7 +19,7 @@ from trl.data_utils import is_conversational, maybe_apply_chat_template
 
 
 class AWROfflineTrainer(GRPOTrainer):
-    """GRPOTrainer with reward weighted regression."""
+    """GRPOTrainer that uses gated signed rewards as TRL advantages."""
 
     def __init__(
         self,
@@ -34,11 +33,11 @@ class AWROfflineTrainer(GRPOTrainer):
         """
         Args:
             offline_data: dict keyed by (question_id, run_id) with values
-                containing completion_ids, advantage, reward, response.
+                containing completion_ids, reward, response.
                 Behavior logprobs are NOT required (ignored if present).
-            dg_temperature: deprecated
-            dg_gating: deprecated. How to compute surprisal for the gate.
-                "completion" = mean per-token surprisal over the completion.
+            dg_temperature: temperature for exp(reward / eta) gate
+            dg_gating: gate granularity.
+                "completion" = one gate per completion.
                 "token" = per-token gating (each token gets its own gate).
             ref_sync_steps: Sync reference LoRA adapter every N steps.
                 0 = never sync (use original base model via disable_adapter).
@@ -120,7 +119,7 @@ class AWROfflineTrainer(GRPOTrainer):
         run_ids = [i % num_gen for i in range(batch_size)]
 
         completion_id_lists = []
-        advantages_list = []
+        rewards_list = []
 
         for qid, rid in zip(question_ids, run_ids):
             rec = self._offline_data.get((qid, rid))
@@ -130,7 +129,7 @@ class AWROfflineTrainer(GRPOTrainer):
                     "Check that num_generations matches the rollout file."
                 )
             completion_id_lists.append(rec["completion_ids"])
-            advantages_list.append(rec["advantage"])
+            rewards_list.append(rec["reward"])
 
         # ---- 3. Pad completions & build masks -----------------------------
         max_comp_len = max(len(c) for c in completion_id_lists)
@@ -154,7 +153,7 @@ class AWROfflineTrainer(GRPOTrainer):
 
         completion_ids = torch.stack(completion_ids_tensors)
         completion_mask = torch.stack(completion_mask_tensors)
-        advantages = torch.tensor(advantages_list, dtype=torch.float32, device=device)
+        rewards = torch.tensor(rewards_list, dtype=torch.float32, device=device)
 
         # ---- 4. Compute current policy logprobs ---------------------------
         prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
@@ -166,33 +165,32 @@ class AWROfflineTrainer(GRPOTrainer):
                 self.model, prompt_completion_ids, attention_mask, logits_to_keep,
             )
 
-        # ---- 5. Compute DG gate -------------------------------------------
+        # ---- 5. Compute reward gate ----------------------------------------
         surprisal = -current_per_token_logps  # (B, C), non-negative
 
         if self._dg_gating == "completion":
-            # Mean per-token surprisal over the completion
+            # Mean per-token surprisal is logged for diagnostics.
             lengths = completion_mask.sum(dim=1).clamp(min=1).float()
             completion_surprisal = (surprisal * completion_mask).sum(dim=1) / lengths  # (B,)
-            delight = advantages # * completion_surprisal
-            gate = torch.exp(delight / self._dg_temperature)  # (B,)
-            # gate = torch.ones_like(gate)
-            gated_advantages = gate * advantages
+            reward_signal = rewards
+            gate = torch.exp(reward_signal / self._dg_temperature)  # (B,)
+            gated_rewards = gate * rewards
         elif self._dg_gating == "token":
             # Per-token gating: each token gets its own gate
-            per_token_delight = advantages.unsqueeze(1) # * surprisal  # (B, C)
-            per_token_gate = torch.exp(per_token_delight / self._dg_temperature)  # (B, C)
-            # For TRL compatibility, we fold per-token gates into advantages
-            # by using a single scalar advantage weighted by the mean gate
+            per_token_reward_signal = rewards.unsqueeze(1)
+            per_token_gate = torch.exp(per_token_reward_signal / self._dg_temperature)  # (B, C)
+            # For TRL compatibility, we fold per-token gates into rewards
+            # by using a single scalar reward weighted by the mean gate
             mean_gate = (per_token_gate * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1)
             # mean_gate = torch.ones_like(mean_gate)
-            gated_advantages = mean_gate * advantages
+            gated_rewards = mean_gate * rewards
         else:
             raise ValueError(f"Unknown dg_gating mode: {self._dg_gating}")
 
         # ---- 6. Set old_logps = current logps (neutralize IS ratio) -------
         # With ratio = exp(new - old) = exp(new - current) ≈ 1.0 at the
         # start of each step, PPO clipping becomes a no-op. The effective
-        # loss is: -gated_advantage * log π_current, i.e. gated REINFORCE.
+        # loss is: -gated_reward * log π_current, i.e. gated REINFORCE.
         old_per_token_logps = current_per_token_logps.detach()
 
         # ---- 7. Compute ref logprobs (for KL penalty) ---------------------
@@ -224,20 +222,16 @@ class AWROfflineTrainer(GRPOTrainer):
         self._metrics[mode]["completions/min_length"].append(agg_completion_lengths.float().min().item())
         self._metrics[mode]["completions/max_length"].append(agg_completion_lengths.float().max().item())
 
-        rewards = torch.tensor(
-            [self._offline_data[(qid, rid)]["reward"] for qid, rid in zip(question_ids, run_ids)],
-            device=device,
-        )
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(rewards.std().item())
 
-        # DG-specific metrics
+        # AWR-specific metrics
         if self._dg_gating == "completion":
-            self._metrics[mode]["dg/gate_mean"].append(gate.mean().item())
-            self._metrics[mode]["dg/gate_min"].append(gate.min().item())
-            self._metrics[mode]["dg/gate_max"].append(gate.max().item())
-            self._metrics[mode]["dg/delight_mean"].append(delight.mean().item())
-            self._metrics[mode]["dg/surprisal_mean"].append(completion_surprisal.mean().item())
+            self._metrics[mode]["awr/gate_mean"].append(gate.mean().item())
+            self._metrics[mode]["awr/gate_min"].append(gate.min().item())
+            self._metrics[mode]["awr/gate_max"].append(gate.max().item())
+            self._metrics[mode]["awr/reward_signal_mean"].append(reward_signal.mean().item())
+            self._metrics[mode]["awr/surprisal_mean"].append(completion_surprisal.mean().item())
 
         completions_text = self.processing_class.batch_decode(
             completion_ids, skip_special_tokens=True
@@ -253,7 +247,7 @@ class AWROfflineTrainer(GRPOTrainer):
 
         self._logs["prompt"].extend(gather_object(prompts_text))
         self._logs["completion"].extend(gather_object(completions_text))
-        self._logs["advantages"].extend(gated_advantages.tolist())
+        self._logs["advantages"].extend(gated_rewards.tolist())
 
         # ---- 9. Build output dict -----------------------------------------
         num_items_in_batch = agg_completion_lengths.sum()
@@ -263,7 +257,7 @@ class AWROfflineTrainer(GRPOTrainer):
             "prompt_mask": prompt_mask,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
-            "advantages": gated_advantages,
+            "advantages": gated_rewards,
             "old_per_token_logps": old_per_token_logps,
             "num_items_in_batch": num_items_in_batch,
         }

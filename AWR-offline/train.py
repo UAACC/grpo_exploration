@@ -1,7 +1,6 @@
-"""Train with Delightful offline GRPO.
+"""Train with AWR offline GRPO.
 
-Uses pre-collected teacher rollouts but replaces IS-ratio weighting with
-DG's sigmoid gate on delight = advantage x surprisal.
+Uses pre-collected teacher rollouts with signed correctness rewards.
 
 Usage:
     accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
@@ -23,7 +22,7 @@ from trl import GRPOConfig
 
 # Import local trainer BEFORE adding offline_grpo to sys.path
 # (both have trainer.py — local must resolve first)
-from trainer import RWROfflineTrainer
+from trainer import AWROfflineTrainer
 
 # Add offline_grpo for shared data loading utilities
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +30,13 @@ _project_root = os.path.dirname(_this_dir)
 sys.path.insert(0, os.path.join(_project_root, "offline_grpo"))
 
 from data import load_rollouts, compute_rewards_and_advantages, build_training_dataset, build_offline_lookup
+
+
+def assign_signed_correctness_rewards(records: list[dict]) -> list[dict]:
+    """Use signed correctness rewards: +1 for correct, -1 for wrong."""
+    for rec in records:
+        rec["reward"] = 1.0 if rec.get("reward", 0.0) > 0.0 else -1.0
+    return records
 
 
 class MetricsFileCallback(TrainerCallback):
@@ -64,9 +70,9 @@ def parse_args():
     # Output
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--run_name", type=str, default=None)
-    # DG-specific hyperparams
+    # AWR-specific hyperparams (CLI names kept for compatibility)
     p.add_argument("--dg_temperature", type=float, default=1.0,
-                    help="eta in sigmoid(delight/eta). Higher = softer gate.")
+                    help="eta in exp(reward/eta). Higher = softer weighting.")
     p.add_argument("--dg_gating", type=str, default="completion",
                     choices=["completion", "token"],
                     help="Gating granularity: per-completion or per-token.")
@@ -119,6 +125,7 @@ def main():
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
+    records = assign_signed_correctness_rewards(records)
     correct = sum(1 for r in records if r["reward"] > 0)
     print(f"  Rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
 
@@ -156,10 +163,10 @@ def main():
 
     # ---- 4. Training config --------------------------------------------
     if args.output_dir is None:
-        args.output_dir = f"./outputs/RWR_offline_{time_str}"
+        args.output_dir = f"./outputs/AWR_offline_{time_str}"
     if args.run_name is None:
         model_name = args.target_model.rstrip("/").split("/")[-1]
-        args.run_name = f"RWR-offline-{model_name}-{time_str}"
+        args.run_name = f"AWR-offline-{model_name}-{time_str}"
 
     if args.wandb_project:
         os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
@@ -195,7 +202,7 @@ def main():
     metrics_path = os.path.join(args.output_dir, "training_metrics.jsonl")
     metrics_callback = MetricsFileCallback(metrics_path)
 
-    trainer = RWROfflineTrainer(
+    trainer = AWROfflineTrainer(
         model=model,
         processing_class=tokenizer,
         reward_funcs=[_dummy_reward],
@@ -209,9 +216,9 @@ def main():
         callbacks=[metrics_callback],
     )
 
-    print(f"=== RWR Offline GRPO ===")
+    print(f"=== AWR Offline GRPO ===")
     print(f"  temperature (eta): {args.dg_temperature}")
-    print(f"  DG gating constant 1")
+    print(f"  AWR gating: {args.dg_gating}")
     print(f"  Beta (KL): {trainer.beta}")
     print(f"  LoRA: {peft_config is not None}")
     print(f"  ref_sync_steps: {args.ref_sync_steps}")
@@ -220,15 +227,15 @@ def main():
         import wandb
         if wandb.run is not None:
             wandb.config.update({
-                "method": "dg-offline-grpo",
+                "method": "awr-offline-grpo",
                 "target_model": args.target_model,
                 "behavior_model": args.behavior_model or "unknown",
                 "rollout_path": args.rollout_path,
                 "num_completions": len(records),
                 "num_problems": len(records) // args.num_generations,
                 "reward_accuracy": correct / len(records),
-                "dg_temperature": args.dg_temperature,
-                "dg_gating": args.dg_gating,
+                "awr_temperature": args.dg_temperature,
+                "awr_gating": args.dg_gating,
                 "beta": args.beta,
                 "lora_r": args.lora_r if not args.no_lora else None,
                 "lora_alpha": args.lora_alpha if not args.no_lora else None,
