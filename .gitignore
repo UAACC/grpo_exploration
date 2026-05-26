@@ -10,6 +10,7 @@
 !bc/
 !Math_Verifier/
 !RWR-offline/
+!AWR-offline/
 
 # Track root-level supporting files
 !README.md
@@ -33,6 +34,7 @@ docs/*
 !shared/**
 !Math_Verifier/**
 !RWR-offline/**
+!AWR-offline/**
 # But exclude runtime artifacts everywhere
 **/__pycache__/
 **/*.pyc
