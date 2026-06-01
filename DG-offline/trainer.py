@@ -7,8 +7,9 @@ learner's current policy, so no behavior policy logprobs are needed.
 The key change from OfflineGRPOTrainer:
   - old_per_token_logps is set to the CURRENT policy's logprobs (not behavior's),
     neutralizing the IS ratio to 1.0 so PPO clipping becomes a no-op.
-  - Advantages are pre-multiplied by sigmoid(delight / eta), implementing
-    the DG gate within TRL's standard loss computation.
+  - The selected training signal (advantage by default, or signed reward in
+    signed_reward mode) is pre-multiplied by sigmoid(delight / eta),
+    implementing the DG gate within the TRL loss selected by GRPOConfig.loss_type.
 
 Reference: Osband (2026), "Delightful Distributed Policy Gradient", arXiv:2603.20521
 """
@@ -29,6 +30,7 @@ class DGOfflineTrainer(GRPOTrainer):
         self,
         *args,
         offline_data: dict,
+        training_regime: str = "current",
         dg_temperature: float = 1.0,
         dg_gating: str = "completion",
         ref_sync_steps: int = 0,
@@ -39,6 +41,10 @@ class DGOfflineTrainer(GRPOTrainer):
             offline_data: dict keyed by (question_id, run_id) with values
                 containing completion_ids, advantage, reward, response.
                 Behavior logprobs are NOT required (ignored if present).
+            training_regime: "current" uses group-normalized advantages as
+                before. "signed_reward" uses raw signed rewards as
+                the training signal. The GRPO vs Dr.GRPO loss is selected
+                separately via GRPOConfig.loss_type.
             dg_temperature: eta in the DG gate sigma(delight / eta).
                 Higher = softer gate (closer to uniform 0.5 weighting).
                 Lower = harder gate (more aggressive filtering).
@@ -50,6 +56,9 @@ class DGOfflineTrainer(GRPOTrainer):
         """
         super().__init__(*args, **kwargs)
         self._offline_data = offline_data
+        self._training_regime = training_regime
+        if self._training_regime not in ("current", "signed_reward"):
+            raise ValueError(f"Unknown training_regime: {self._training_regime}")
         self._dg_temperature = dg_temperature
         self._dg_gating = dg_gating
         self._ref_sync_steps = ref_sync_steps
@@ -122,20 +131,23 @@ class DGOfflineTrainer(GRPOTrainer):
         batch_size = len(inputs)
         num_gen = self.num_generations
         question_ids = [x.get("question_id") for x in inputs]
-        run_ids = [i % num_gen for i in range(batch_size)]
+        run_ids = [x.get("run_id", i % num_gen) for i, x in enumerate(inputs)]
 
         completion_id_lists = []
-        advantages_list = []
+        signal_list = []
 
         for qid, rid in zip(question_ids, run_ids):
             rec = self._offline_data.get((qid, rid))
             if rec is None:
                 raise KeyError(
                     f"No offline data for (question_id={qid}, run_id={rid}). "
-                    "Check that num_generations matches the rollout file."
+                    "Check that num_generations matches the rollout file(s)."
                 )
             completion_id_lists.append(rec["completion_ids"])
-            advantages_list.append(rec["advantage"])
+            if self._training_regime == "signed_reward":
+                signal_list.append(rec["reward"])
+            else:
+                signal_list.append(rec["advantage"])
 
         # ---- 3. Pad completions & build masks -----------------------------
         max_comp_len = max(len(c) for c in completion_id_lists)
@@ -159,7 +171,7 @@ class DGOfflineTrainer(GRPOTrainer):
 
         completion_ids = torch.stack(completion_ids_tensors)
         completion_mask = torch.stack(completion_mask_tensors)
-        advantages = torch.tensor(advantages_list, dtype=torch.float32, device=device)
+        training_signal = torch.tensor(signal_list, dtype=torch.float32, device=device)
 
         # ---- 4. Compute current policy logprobs ---------------------------
         prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
@@ -178,24 +190,24 @@ class DGOfflineTrainer(GRPOTrainer):
             # Mean per-token surprisal over the completion
             lengths = completion_mask.sum(dim=1).clamp(min=1).float()
             completion_surprisal = (surprisal * completion_mask).sum(dim=1) / lengths  # (B,)
-            delight = advantages * completion_surprisal
+            delight = training_signal * completion_surprisal
             gate = torch.sigmoid(delight / self._dg_temperature)  # (B,)
-            gated_advantages = gate * advantages
+            gated_signal = gate * training_signal
         elif self._dg_gating == "token":
             # Per-token gating: each token gets its own gate
-            per_token_delight = advantages.unsqueeze(1) * surprisal  # (B, C)
+            per_token_delight = training_signal.unsqueeze(1) * surprisal  # (B, C)
             per_token_gate = torch.sigmoid(per_token_delight / self._dg_temperature)  # (B, C)
-            # For TRL compatibility, we fold per-token gates into advantages
-            # by using a single scalar advantage weighted by the mean gate
+            # For TRL compatibility, we fold per-token gates into the signal
+            # by using one scalar weighted by the mean gate.
             mean_gate = (per_token_gate * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1)
-            gated_advantages = mean_gate * advantages
+            gated_signal = mean_gate * training_signal
         else:
             raise ValueError(f"Unknown dg_gating mode: {self._dg_gating}")
 
         # ---- 6. Set old_logps = current logps (neutralize IS ratio) -------
         # With ratio = exp(new - old) = exp(new - current) ≈ 1.0 at the
         # start of each step, PPO clipping becomes a no-op. The effective
-        # loss is: -gated_advantage * log π_current, i.e. gated REINFORCE.
+        # signal is gated before TRL applies its configured GRPO loss.
         old_per_token_logps = current_per_token_logps.detach()
 
         # ---- 7. Compute ref logprobs (for KL penalty) ---------------------
@@ -256,7 +268,7 @@ class DGOfflineTrainer(GRPOTrainer):
 
         self._logs["prompt"].extend(gather_object(prompts_text))
         self._logs["completion"].extend(gather_object(completions_text))
-        self._logs["advantages"].extend(gated_advantages.tolist())
+        self._logs["advantages"].extend(gated_signal.tolist())
 
         # ---- 9. Build output dict -----------------------------------------
         num_items_in_batch = agg_completion_lengths.sum()
@@ -266,7 +278,7 @@ class DGOfflineTrainer(GRPOTrainer):
             "prompt_mask": prompt_mask,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
-            "advantages": gated_advantages,
+            "advantages": gated_signal,
             "old_per_token_logps": old_per_token_logps,
             "num_items_in_batch": num_items_in_batch,
         }

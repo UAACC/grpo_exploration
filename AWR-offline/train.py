@@ -125,7 +125,7 @@ def main():
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
-    records = assign_signed_correctness_rewards(records)
+    # records = assign_signed_correctness_rewards(records)
     correct = sum(1 for r in records if r["reward"] > 0)
     print(f"  Rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
 

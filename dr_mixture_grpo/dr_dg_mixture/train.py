@@ -65,6 +65,10 @@ def parse_args():
     p.add_argument("--baseline_top_p", type=float, default=1.0)
     p.add_argument("--baseline_max_new_tokens", type=int, default=None,
                     help="Defaults to cfg.max_tokens.")
+    p.add_argument("--no_vllm_baseline", action="store_true",
+                    help="Use HF generate instead of TRL colocated vLLM for live baseline sampling.")
+    p.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.30,
+                    help="Fraction of each GPU reserved for colocated vLLM baseline generation.")
     # DG gate hyperparam.
     p.add_argument("--dg_temperature", type=float, default=1.0,
                     help="eta in sigmoid(delight / eta). Needs re-tuning for Dr.Mixture's "
@@ -87,6 +91,9 @@ def parse_args():
     p.add_argument("--lr_scheduler_type", type=str, default="cosine")
     p.add_argument("--save_steps", type=int, default=500)
     p.add_argument("--logging_steps", type=int, default=5)
+    p.add_argument("--loss_type", type=str, default="dr_grpo",
+                    choices=["grpo", "bnpo", "dr_grpo", "dapo"],
+                    help="TRL GRPO loss normalization. Default uses Dr.GRPO.")
     p.add_argument("--lora_r", type=int, default=DEFAULT_LORA_CONFIG["r"])
     p.add_argument("--lora_alpha", type=int, default=DEFAULT_LORA_CONFIG["lora_alpha"])
     p.add_argument("--no_lora", action="store_true")
@@ -159,6 +166,13 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
+        loss_type=args.loss_type,
+        use_vllm=not args.no_vllm_baseline,
+        **({"vllm_mode": "colocate",
+            "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization}
+           if not args.no_vllm_baseline else {}),
+        temperature=args.baseline_temperature,
+        top_p=args.baseline_top_p,
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
@@ -202,7 +216,10 @@ def main():
     )
 
     print(f"Dr.DG.Mixture trainer initialized. eta={args.dg_temperature}, "
-          f"K_s={args.K_s} live samples/step")
+          f"K_s={args.K_s} live samples/step, "
+          f"loss_type={args.loss_type}, "
+          f"baseline_gen={'vLLM colocate' if not args.no_vllm_baseline else 'HF generate'}, "
+          f"vllm_mem={args.vllm_gpu_memory_utilization if not args.no_vllm_baseline else 'n/a'}")
 
     if args.report_to == "wandb" and trainer.accelerator.is_main_process:
         import wandb
@@ -213,6 +230,9 @@ def main():
                 "rollout_path": args.rollout_path,
                 "dataset": args.dataset,
                 "dg_temperature": args.dg_temperature,
+                "loss_type": args.loss_type,
+                "baseline_generation": "vllm_colocate" if not args.no_vllm_baseline else "hf_generate",
+                "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization if not args.no_vllm_baseline else None,
                 "beta": args.beta,
             })
 

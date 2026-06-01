@@ -5,6 +5,11 @@ Usage:
         --rollout_path /scratch/mrli/rollouts/math_teacher/rollouts_full.jsonl \
         --target_model /scratch/mrli/models/Qwen2.5-0.5B-Instruct \
         --output_dir /scratch/mrli/checkpoints/bc_math
+
+    accelerate launch train_bc.py \
+        --rollout_path /path/to/teacher_a.jsonl /path/to/teacher_b.jsonl \
+        --target_model /scratch/mrli/models/Qwen2.5-0.5B-Instruct \
+        --output_dir /scratch/mrli/checkpoints/bc_math_multi_teacher
 """
 
 import argparse
@@ -15,6 +20,7 @@ from datetime import datetime
 
 import torch
 from peft import LoraConfig, get_peft_model
+from torch.utils.data import ConcatDataset
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -24,11 +30,17 @@ from transformers import (
     TrainingArguments,
 )
 
-# Import local bc/data.py first (before sys.path modification)
-from data import BCCollator, BCDataset
+# Add offline_grpo to path before importing bc/data.py; data.py imports configs.
+BC_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BC_DIR, ".."))
+OFFLINE_GRPO_DIR = os.path.join(PROJECT_ROOT, "offline_grpo")
+for _path in (OFFLINE_GRPO_DIR, BC_DIR):
+    if _path in sys.path:
+        sys.path.remove(_path)
+sys.path.insert(0, BC_DIR)
+sys.path.insert(1, OFFLINE_GRPO_DIR)
 
-# Add offline_grpo to path for configs
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "offline_grpo"))
+from data import BCCollator, BCDataset
 from configs import DEFAULT_LORA_CONFIG, DEFAULT_TARGET_MODEL
 
 
@@ -53,7 +65,8 @@ class MetricsFileCallback(TrainerCallback):
 def parse_args():
     p = argparse.ArgumentParser(description="Offline BC training with LoRA.")
     p.add_argument("--target_model", type=str, default=DEFAULT_TARGET_MODEL)
-    p.add_argument("--rollout_path", type=str, required=True)
+    p.add_argument("--rollout_path", type=str, nargs="+", required=True,
+                    help="Path(s) to teacher rollouts JSONL.")
     p.add_argument("--output_dir", type=str, required=True)
     p.add_argument("--run_name", type=str, default=None)
     # Data
@@ -126,14 +139,19 @@ def main():
         model.print_trainable_parameters()
 
     # ---- 3. Load dataset -----------------------------------------------
-    print(f"Loading rollouts from {args.rollout_path} ...")
-    dataset = BCDataset(
-        rollout_path=args.rollout_path,
-        tokenizer=tokenizer,
-        max_length=args.max_length,
-        vocab_size=model_config.vocab_size,
-        filter_correct_only=args.filter_correct_only,
-    )
+    rollout_paths = args.rollout_path
+    print(f"Loading rollouts from {', '.join(rollout_paths)} ...")
+    datasets = [
+        BCDataset(
+            rollout_path=rollout_path,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+            vocab_size=model_config.vocab_size,
+            filter_correct_only=args.filter_correct_only,
+        )
+        for rollout_path in rollout_paths
+    ]
+    dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
     # Sanity check: print one sample
     sample = dataset[0]

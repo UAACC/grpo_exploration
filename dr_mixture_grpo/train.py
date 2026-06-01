@@ -90,6 +90,10 @@ def parse_args():
     p.add_argument("--baseline_top_p", type=float, default=1.0)
     p.add_argument("--baseline_max_new_tokens", type=int, default=None,
                     help="Defaults to cfg.max_tokens.")
+    p.add_argument("--no_vllm_baseline", action="store_true",
+                    help="Use HF generate instead of TRL colocated vLLM for live baseline sampling.")
+    p.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.30,
+                    help="Fraction of each GPU reserved for colocated vLLM baseline generation.")
     # Output
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--run_name", type=str, default=None)
@@ -110,6 +114,9 @@ def parse_args():
     p.add_argument("--lr_scheduler_type", type=str, default="cosine")
     p.add_argument("--save_steps", type=int, default=500)
     p.add_argument("--logging_steps", type=int, default=5)
+    p.add_argument("--loss_type", type=str, default="dr_grpo",
+                    choices=["grpo", "bnpo", "dr_grpo", "dapo"],
+                    help="TRL GRPO loss normalization. Default uses Dr.GRPO.")
     # LoRA
     p.add_argument("--lora_r", type=int, default=DEFAULT_LORA_CONFIG["r"])
     p.add_argument("--lora_alpha", type=int, default=DEFAULT_LORA_CONFIG["lora_alpha"])
@@ -191,6 +198,13 @@ def main():
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_generations=args.num_generations,
         max_completion_length=args.max_completion_length,
+        loss_type=args.loss_type,
+        use_vllm=not args.no_vllm_baseline,
+        **({"vllm_mode": "colocate",
+            "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization}
+           if not args.no_vllm_baseline else {}),
+        temperature=args.baseline_temperature,
+        top_p=args.baseline_top_p,
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps,
         save_steps=args.save_steps,
@@ -234,6 +248,9 @@ def main():
     print(f"Dr.Mixture-GRPO trainer initialized. "
           f"K_s={args.K_s} live samples/step, "
           f"baseline_T={args.baseline_temperature}, "
+          f"loss_type={args.loss_type}, "
+          f"baseline_gen={'vLLM colocate' if not args.no_vllm_baseline else 'HF generate'}, "
+          f"vllm_mem={args.vllm_gpu_memory_utilization if not args.no_vllm_baseline else 'n/a'}, "
           f"LoRA={peft_config is not None}")
 
     if args.report_to == "wandb" and trainer.accelerator.is_main_process:
@@ -246,6 +263,9 @@ def main():
                 "dataset": args.dataset,
                 "K_s": args.K_s,
                 "baseline_temperature": args.baseline_temperature,
+                "loss_type": args.loss_type,
+                "baseline_generation": "vllm_colocate" if not args.no_vllm_baseline else "hf_generate",
+                "vllm_gpu_memory_utilization": args.vllm_gpu_memory_utilization if not args.no_vllm_baseline else None,
                 "beta": args.beta,
                 "lora_r": args.lora_r if not args.no_lora else None,
                 "lora_alpha": args.lora_alpha if not args.no_lora else None,

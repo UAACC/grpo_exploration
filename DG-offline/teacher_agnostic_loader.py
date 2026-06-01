@@ -95,8 +95,8 @@ def extract_gsm8k_answer(text: str) -> str | None:
 # 1. Load rollouts (Path A: re-tokenize teacher response under STUDENT)
 # ---------------------------------------------------------------------------
 
-def load_rollouts_text(jsonl_path: str, student_tokenizer) -> list[dict]:
-    """Load a rollout JSONL and re-tokenize each completion under *student_tokenizer*.
+def load_rollouts_text(jsonl_path: str | list[str], student_tokenizer) -> list[dict]:
+    """Load rollout JSONL file(s) and re-tokenize each completion under *student_tokenizer*.
 
     Each output record contains:
         question_id, run_id, problem, ground_truth, system_prompt,
@@ -104,49 +104,56 @@ def load_rollouts_text(jsonl_path: str, student_tokenizer) -> list[dict]:
 
     `completion_ids` are STUDENT-vocab IDs produced by tokenizing `response`
     with *student_tokenizer* using `add_special_tokens=False`. Any teacher
-    `completion_ids` and `logprobs` on disk are ignored.
+    `completion_ids` and `logprobs` on disk are ignored. When multiple rollout
+    files are provided, run IDs are remapped to be contiguous per question.
     """
     records: list[dict] = []
     n_empty = 0
-    with open(jsonl_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            item = json.loads(line)
-            qid = item["question_id"]
-            dataset_type = item.get("dataset_type", "math")
-            for run in item["runs"]:
-                response_text = run["response"]
-                # Re-tokenize the teacher's text under the student tokenizer.
-                # No special tokens — the prompt side carries those at training time.
-                student_ids = student_tokenizer(
-                    response_text, add_special_tokens=False
-                )["input_ids"]
-                if len(student_ids) == 0:
-                    n_empty += 1
-                    # Keep the record so num_generations grouping stays intact.
-                    # The trainer pads short rows; an empty row becomes all-pad
-                    # with zero mask and contributes nothing to the loss.
+    next_run_id: dict[Any, int] = defaultdict(int)
+    jsonl_paths = [jsonl_path] if isinstance(jsonl_path, str) else jsonl_path
+    for path in jsonl_paths:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                qid = item["question_id"]
+                dataset_type = item.get("dataset_type", "math")
+                for run in item["runs"]:
+                    response_text = run["response"]
+                    # Re-tokenize the teacher text under the student tokenizer.
+                    # No special tokens; the prompt side carries those at training time.
+                    student_ids = student_tokenizer(
+                        response_text, add_special_tokens=False
+                    )["input_ids"]
+                    if len(student_ids) == 0:
+                        n_empty += 1
+                        # Keep the record so num_generations grouping stays intact.
+                        # The trainer pads short rows; an empty row becomes all-pad
+                        # with zero mask and contributes nothing to the loss.
 
-                records.append({
-                    "question_id": qid,
-                    "run_id": run["run_id"],
-                    "problem": item["original_problem"],
-                    "ground_truth": item["ground_truth_answer"],
-                    "system_prompt": item.get("system_prompt", MATH_SYSTEM_PROMPT),
-                    "dataset_type": dataset_type,
-                    "response": response_text,
-                    # Newer rollouts use "extracted_answer"; older ones use "boxed_answer".
-                    "extracted_answer": run.get("extracted_answer") or run.get("boxed_answer"),
-                    "completion_ids": student_ids,
-                })
+                    run_id = next_run_id[qid]
+                    next_run_id[qid] += 1
+                    records.append({
+                        "question_id": qid,
+                        "run_id": run_id,
+                        "problem": item["original_problem"],
+                        "ground_truth": item["ground_truth_answer"],
+                        "system_prompt": item.get("system_prompt", MATH_SYSTEM_PROMPT),
+                        "dataset_type": dataset_type,
+                        "response": response_text,
+                        # Newer rollouts use "extracted_answer"; older ones use "boxed_answer".
+                        "extracted_answer": run.get("extracted_answer") or run.get("boxed_answer"),
+                        "completion_ids": student_ids,
+                    })
     if n_empty > 0:
         print(
             f"  Warning: {n_empty} completions re-tokenized to empty under the student "
             f"tokenizer (kept as zero-length rows)"
         )
     return records
+
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +245,7 @@ def build_training_dataset(records: list[dict]) -> Dataset:
     share a prompt — matching TRL's grouping expectation."""
     records = sorted(records, key=lambda r: (r["question_id"], r["run_id"]))
 
-    prompts, answers, qids = [], [], []
+    prompts, answers, qids, run_ids = [], [], [], []
     for rec in records:
         prompts.append([
             {"role": "system", "content": rec["system_prompt"]},
@@ -246,11 +253,13 @@ def build_training_dataset(records: list[dict]) -> Dataset:
         ])
         answers.append(rec["ground_truth"])
         qids.append(rec["question_id"])
+        run_ids.append(rec["run_id"])
 
     return Dataset.from_dict({
         "prompt": prompts,
         "answer": answers,
         "question_id": qids,
+        "run_id": run_ids,
     })
 
 

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+from collections import Counter
 from datetime import datetime
 
 import torch
@@ -27,6 +28,35 @@ from teacher_agnostic_loader import (
     build_training_dataset,
     build_offline_lookup,
 )
+
+
+
+def infer_num_generations(records: list[dict]) -> int:
+    counts = Counter(rec["question_id"] for rec in records)
+    values = set(counts.values())
+    if len(values) != 1:
+        sample = sorted(counts.items(), key=lambda item: item[0])[:5]
+        raise ValueError(
+            "Rollout files have non-uniform completions per question: "
+            f"counts={sample} ..."
+        )
+    return values.pop()
+
+
+def validate_num_generations(records: list[dict], num_generations: int) -> None:
+    counts = Counter(rec["question_id"] for rec in records)
+    bad = [(qid, count) for qid, count in counts.items() if count != num_generations]
+    if bad:
+        raise ValueError(
+            f"--num_generations={num_generations} does not match loaded rollouts; "
+            f"sample mismatches={bad[:5]}"
+        )
+
+def assign_signed_correctness_rewards(records: list[dict]) -> list[dict]:
+    """Use signed correctness rewards: +1 for correct, -1 for wrong."""
+    for rec in records:
+        rec["reward"] = 2.0 if rec.get("reward", 0.0) > 0.0 else -2.0
+    return records
 
 
 class MetricsFileCallback(TrainerCallback):
@@ -55,12 +85,30 @@ def parse_args():
     p.add_argument("--behavior_model", type=str, default=None,
                     help="Name of behavior model (for logging only).")
     # Data
-    p.add_argument("--rollout_path", type=str, required=True,
-                    help="Path to teacher rollouts JSONL.")
+    p.add_argument("--rollout_path", type=str, nargs="+", required=True,
+                    help="Path(s) to teacher rollouts JSONL.")
     # Output
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--run_name", type=str, default=None)
     # DG-specific hyperparams
+    p.add_argument("--training_regime", type=str, default="current",
+                    choices=["current", "signed_reward", "signed_reward_dr_grpo"],
+                    help=(
+                        "'current' keeps existing 0/1 rewards, group-normalized "
+                        "advantages, and the selected TRL loss. "
+                        "'signed_reward' uses -1/+1 signed rewards as "
+                        "the trainer signal. If --loss_type is omitted, this "
+                        "legacy regime defaults to loss_type='dr_grpo'."
+                    ))
+    p.add_argument("--loss_type", type=str, default=None,
+                    choices=["grpo", "dr_grpo"],
+                    help=(
+                        "TRL GRPO loss formulation. 'grpo' uses the original "
+                        "GRPO sequence-normalized loss; 'dr_grpo' uses the "
+                        "Dr.GRPO constant-length normalization. Defaults to "
+                        "'grpo', except signed_reward defaults to "
+                        "'dr_grpo' when omitted."
+                    ))
     p.add_argument("--dg_temperature", type=float, default=1.0,
                     help="eta in sigmoid(delight/eta). Higher = softer gate.")
     p.add_argument("--dg_gating", type=str, default="completion",
@@ -70,8 +118,8 @@ def parse_args():
     p.add_argument("--learning_rate", type=float, default=3e-6)
     p.add_argument("--beta", type=float, default=0.001,
                     help="KL penalty coefficient.")
-    p.add_argument("--num_generations", type=int, default=4,
-                    help="Completions per prompt in the rollout data.")
+    p.add_argument("--num_generations", type=int, default=None,
+                    help="Completions per prompt in the rollout data. Inferred if omitted.")
     p.add_argument("--per_device_train_batch_size", type=int, default=4)
     p.add_argument("--gradient_accumulation_steps", type=int, default=2)
     p.add_argument("--num_train_epochs", type=int, default=1)
@@ -108,6 +156,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.training_regime == "signed_reward_dr_grpo":
+        args.training_regime = "signed_reward"
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # ---- 1. Load student tokenizer (needed by the loader) ---------------
@@ -117,11 +167,19 @@ def main():
     # ---- 2. Load & process offline rollouts -----------------------------
     # Path A: re-tokenize each teacher response under the STUDENT tokenizer.
     # No assumption that teacher and student share a vocabulary.
-    print(f"Loading rollouts from {args.rollout_path} ...")
+    rollout_paths = ", ".join(args.rollout_path)
+    print(f"Loading rollouts from {rollout_paths} ...")
     records = load_rollouts_text(args.rollout_path, tokenizer)
     print(f"  {len(records)} completions loaded")
+    if args.num_generations is None:
+        args.num_generations = infer_num_generations(records)
+        print(f"  Inferred num_generations={args.num_generations}")
+    else:
+        validate_num_generations(records, args.num_generations)
 
     records = compute_rewards_and_advantages(records)
+    if args.training_regime == "signed_reward":
+        records = assign_signed_correctness_rewards(records)
     correct = sum(1 for r in records if r["reward"] > 0)
     print(f"  Rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
 
@@ -164,6 +222,10 @@ def main():
     if args.wandb_project:
         os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
 
+    loss_type = args.loss_type
+    if loss_type is None:
+        loss_type = "dr_grpo" if args.training_regime == "signed_reward" else "grpo"
+
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         run_name=args.run_name,
@@ -187,6 +249,7 @@ def main():
         report_to=args.report_to,
         log_on_each_node=False,
         seed=args.seed,
+        loss_type=loss_type,
     )
 
     # ---- 6. Create trainer & train -------------------------------------
@@ -204,6 +267,7 @@ def main():
         train_dataset=dataset,
         peft_config=peft_config,
         offline_data=offline_data,
+        training_regime=args.training_regime,
         dg_temperature=args.dg_temperature,
         dg_gating=args.dg_gating,
         ref_sync_steps=args.ref_sync_steps,
@@ -211,6 +275,8 @@ def main():
     )
 
     print(f"=== DG Offline GRPO ===")
+    print(f"  Training regime: {args.training_regime}")
+    print(f"  Loss type: {loss_type}")
     print(f"  DG temperature (eta): {args.dg_temperature}")
     print(f"  DG gating: {args.dg_gating}")
     print(f"  Beta (KL): {trainer.beta}")
@@ -222,6 +288,8 @@ def main():
         if wandb.run is not None:
             wandb.config.update({
                 "method": "dg-offline-grpo",
+                "training_regime": args.training_regime,
+                "loss_type": loss_type,
                 "target_model": args.target_model,
                 "behavior_model": args.behavior_model or "unknown",
                 "rollout_path": args.rollout_path,

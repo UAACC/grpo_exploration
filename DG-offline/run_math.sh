@@ -9,6 +9,8 @@
 #   sbatch run_math.sh eval-baseline      # eval base student model
 #   DG_ETA=0.5 sbatch run_math.sh train   # custom eta
 #   DG_ETA=2.0 sbatch run_math.sh train   # softer gate
+#   TRAINING_REGIME=signed_reward LOSS_TYPE=dr_grpo sbatch run_math.sh train
+#   LOSS_TYPE=dr_grpo sbatch run_math.sh train # choose grpo or dr_grpo
 #   aip-szepesva
 #SBATCH --account=aip-szepesva
 #SBATCH --job-name=dg-offline-math
@@ -27,9 +29,9 @@ SCRATCH="${SCRATCH:-/scratch/shuai14}"
 WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
 
-STUDENT_MODEL="${STUDENT_MODEL:-/scratch/mrli/models/Qwen2.5-0.5B-Instruct}"
-TEACHER_MODEL="${TEACHER_MODEL:-/scratch/mrli/models/Qwen2.5-Math-7B-Instruct}"
-ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/mrli/rollouts/math_teacher/rollouts_full.jsonl}"
+STUDENT_MODEL="${STUDENT_MODEL:-/scratch/shuai14/models/Qwen2.5-0.5B}"
+TEACHER_MODEL="${TEACHER_MODEL:-/scratch/shuai14/models/Qwen2.5-Math-7B-Instruct}"
+ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/shuai14/rollouts/math_teacher/rollouts_full.jsonl}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/DG_offline_math}"
 MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/DG_offline_math}"
 
@@ -37,6 +39,12 @@ MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/DG_offline_math}"
 #if not set, default to 1.0 (no gating)
 DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
+TRAINING_REGIME="${TRAINING_REGIME:-current}"
+LOSS_TYPE="${LOSS_TYPE:-}"
+LOSS_TYPE_ARGS=()
+if [ -n "${LOSS_TYPE}" ]; then
+    LOSS_TYPE_ARGS=(--loss_type "${LOSS_TYPE}")
+fi
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
@@ -46,11 +54,12 @@ WANDB_PROJECT="${WANDB_PROJECT:-dg-offline-math}"
 # ---- Environment ------------------------------------------------------
 module load python/3.11 cuda/12.6 arrow opencv
 source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
-export HF_HOME="/scratch/mrli"
-export HF_DATASETS_CACHE="/scratch/mrli/datasets/MATH"
+export HF_HOME="/scratch/shuai14"
+export HF_DATASETS_CACHE="/scratch/shuai14/datasets/MATH"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 if [ -f "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key" ]; then
     export WANDB_API_KEY=$(cat /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key)
@@ -67,6 +76,8 @@ echo "  Teacher: ${TEACHER_MODEL}"
 echo "  Rollouts: ${ROLLOUT_PATH}"
 echo "  DG eta: ${DG_ETA}"
 echo "  DG gating: ${DG_GATING}"
+echo "  Training regime: ${TRAINING_REGIME}"
+echo "  Loss type: ${LOSS_TYPE:-train.py default}"
 echo "  Output: ${CHECKPOINT_DIR}"
 
 resolve_eval_checkpoint() {
@@ -98,7 +109,7 @@ run_math_eval() {
         --merge_lora \
         --merged_output "${MERGED_DIR}" \
         --dataset_type math \
-        --runs 5 \
+        --runs 30 \
         --temperature 0.0 \
         --max_tokens 2048 \
         --max_model_len 3072
@@ -118,6 +129,8 @@ if [ "$CMD" = "train" ]; then
         --wandb_project "${WANDB_PROJECT}" \
         --dg_temperature "${DG_ETA}" \
         --dg_gating "${DG_GATING}" \
+        --training_regime "${TRAINING_REGIME}" \
+        "${LOSS_TYPE_ARGS[@]}" \
         --learning_rate 3e-6 \
         --beta 0.001 \
         --num_generations 4 \
@@ -147,7 +160,7 @@ elif [ "$CMD" = "eval-baseline" ]; then
     python "${EVAL_SCRIPT}" \
         --model_path "${STUDENT_MODEL}" \
         --dataset_type math \
-        --runs 5 \
+        --runs 30 \
         --temperature 0.0 \
         --max_tokens 2048 \
         --max_model_len 3072

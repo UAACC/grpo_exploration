@@ -1,18 +1,18 @@
 #!/bin/bash
 #
-# AWR-offline GRPO on MATH dataset
+# DG-offline GRPO on MATH with multiple teacher rollout files.
 #
 # Usage:
-#   sbatch run_math.sh train              # train, then eval final model
-#   sbatch run_math.sh eval               # eval latest checkpoint
-#   sbatch run_math.sh eval checkpoint-500 # eval a named checkpoint
-#   sbatch run_math.sh eval-baseline      # eval base student model
-#   DG_ETA=0.5 sbatch run_math.sh train   # custom eta
-#   DG_ETA=2.0 sbatch run_math.sh train   # softer gate
-#   aip-szepesva
+#   sbatch run_math_multi_teacher.sh train
+#   sbatch run_math_multi_teacher.sh eval
+#   sbatch run_math_multi_teacher.sh eval checkpoint-500
+#   sbatch run_math_multi_teacher.sh eval-baseline
+#   ROLLOUT_PATHS="/path/a.jsonl /path/b.jsonl" sbatch run_math_multi_teacher.sh train
+#   TRAINING_REGIME=signed_reward LOSS_TYPE=dr_grpo sbatch run_math_multi_teacher.sh train
+#
 #SBATCH --account=aip-szepesva
-#SBATCH --job-name=AWR-offline-math
-#SBATCH --time=12:00:00
+#SBATCH --job-name=dg-offline-math-mt
+#SBATCH --time=15:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=l40s:4
 #SBATCH --cpus-per-task=64
@@ -24,56 +24,75 @@ set -euo pipefail
 
 # ---- Paths (configurable via env vars) --------------------------------
 SCRATCH="${SCRATCH:-/scratch/shuai14}"
-WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/AWR-offline"
+WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
 
-STUDENT_MODEL="${STUDENT_MODEL:-/scratch/shuai14/models/Qwen2.5-0.5B-Instruct}"
-TEACHER_MODEL="${TEACHER_MODEL:-/scratch/shuai14/models/Qwen2.5-Math-7B-Instruct}"
-ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/shuai14/rollouts/math_teacher/rollouts_full.jsonl}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/AWR_offline_math}"
-MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/AWR_offline_math}"
+STUDENT_MODEL="${STUDENT_MODEL:-/scratch/shuai14/models/Qwen2.5-0.5B}"
+TEACHER_MODELS="${TEACHER_MODELS:-/scratch/shuai14/models/Qwen2.5-Math-7B-Instruct /scratch/shuai14/models/Qwen2.5-Math-1.5B-Instruct}"
+ROLLOUT_PATHS="${ROLLOUT_PATHS:-${SCRATCH}/rollouts/math_teacher/rollouts_full.jsonl ${SCRATCH}/rollouts/math_teacher/rollouts_math_Qwen2.5-Math-1.5B-Instruct_0.6.jsonl}"
+CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/DG_offline_math_multi_teacher}"
+MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/DG_offline_math_multi_teacher}"
 
-# ---- AWR hyperparameters -----------------------------------------------
-#if not set, default to 1.0 (no gating)
+# ---- DG hyperparameters -----------------------------------------------
 DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
+TRAINING_REGIME="${TRAINING_REGIME:-current}"
+LOSS_TYPE="${LOSS_TYPE:-}"
+LOSS_TYPE_ARGS=()
+if [ -n "${LOSS_TYPE}" ]; then
+    LOSS_TYPE_ARGS=(--loss_type "${LOSS_TYPE}")
+fi
+NUM_GENERATIONS="${NUM_GENERATIONS:-}"
+NUM_GENERATIONS_ARGS=()
+if [ -n "${NUM_GENERATIONS}" ]; then
+    NUM_GENERATIONS_ARGS=(--num_generations "${NUM_GENERATIONS}")
+fi
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
-PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
-GRAD_ACCUM="${GRAD_ACCUM:-2}"
-WANDB_PROJECT="${WANDB_PROJECT:-offline-math}"
+PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-3}"
+GRAD_ACCUM="${GRAD_ACCUM:-3}"
+WANDB_PROJECT="${WANDB_PROJECT:-dg-offline-math-multi-teacher}"
 
 # ---- Environment ------------------------------------------------------
 module load python/3.11 cuda/12.6 arrow opencv
 source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
-CACHE_ROOT="${CACHE_ROOT:-${SCRATCH}/hf_cache}"
-export HF_HOME="${CACHE_ROOT}"
-export HF_MODULES_CACHE="${HF_MODULES_CACHE:-${HF_HOME}/modules}"
-export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
-export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HUB_CACHE}}"
-export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${SCRATCH}/datasets/MATH}"
-export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${SCRATCH}/triton_cache}"
+export HF_HOME="/scratch/shuai14"
+export HF_DATASETS_CACHE="/scratch/shuai14/datasets/MATH"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
-mkdir -p "${HF_MODULES_CACHE}" "${HUGGINGFACE_HUB_CACHE}" "${TRITON_CACHE_DIR}"
 
-if [ -f "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/AWR-offline/.wandb_key" ]; then
-    export WANDB_API_KEY=$(cat /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/AWR-offline/.wandb_key)
+if [ -f "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key" ]; then
+    export WANDB_API_KEY=$(cat /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key)
     echo "Loaded Weights & Biases API key from file."
 fi
 
 mkdir -p "${WORK_DIR}/logs"
 
 cd "${WORK_DIR}"
+read -r -a ROLLOUT_PATH_ARGS <<< "${ROLLOUT_PATHS}"
 
-echo "=== AWR Offline GRPO on MATH ==="
+if [ "${#ROLLOUT_PATH_ARGS[@]}" -lt 2 ]; then
+    echo "Warning: ROLLOUT_PATHS has fewer than 2 files; this will behave like single-teacher training." >&2
+fi
+
+for rollout_path in "${ROLLOUT_PATH_ARGS[@]}"; do
+    if [ ! -f "${rollout_path}" ]; then
+        echo "ERROR: rollout file not found: ${rollout_path}" >&2
+        exit 1
+    fi
+done
+
+echo "=== DG Offline GRPO on MATH (multi-teacher rollouts) ==="
 echo "  Student: ${STUDENT_MODEL}"
-echo "  Teacher: ${TEACHER_MODEL}"
-echo "  Rollouts: ${ROLLOUT_PATH}"
-echo "  AWR eta: ${DG_ETA}"
-echo "  AWR gating: ${DG_GATING}"
+echo "  Teachers: ${TEACHER_MODELS}"
+echo "  Rollouts: ${ROLLOUT_PATHS}"
+echo "  Num generations: ${NUM_GENERATIONS:-inferred from rollout files}"
+echo "  DG eta: ${DG_ETA}"
+echo "  DG gating: ${DG_GATING}"
+echo "  Training regime: ${TRAINING_REGIME}"
+echo "  Loss type: ${LOSS_TYPE:-train.py default}"
 echo "  Output: ${CHECKPOINT_DIR}"
 
 resolve_eval_checkpoint() {
@@ -114,20 +133,21 @@ run_math_eval() {
 
 # ---- Train -------------------------------------------------------------
 CMD="${1:-train}"
-# /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/AWR-offline/
 if [ "$CMD" = "train" ]; then
-    CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --config_file /home/shuai14/projects/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/configs/accelerate_ddp_4gpu.yaml \
+    CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
         train.py \
         --target_model "${STUDENT_MODEL}" \
-        --behavior_model "${TEACHER_MODEL}" \
-        --rollout_path "${ROLLOUT_PATH}" \
+        --behavior_model "${TEACHER_MODELS}" \
+        --rollout_path "${ROLLOUT_PATH_ARGS[@]}" \
         --output_dir "${CHECKPOINT_DIR}" \
         --wandb_project "${WANDB_PROJECT}" \
         --dg_temperature "${DG_ETA}" \
         --dg_gating "${DG_GATING}" \
-        --learning_rate 6e-7 \
+        --training_regime "${TRAINING_REGIME}" \
+        "${LOSS_TYPE_ARGS[@]}" \
+        --learning_rate 3e-6 \
         --beta 0.001 \
-        --num_generations 4 \
+        "${NUM_GENERATIONS_ARGS[@]}" \
         --per_device_train_batch_size "${PER_DEVICE_BATCH}" \
         --gradient_accumulation_steps "${GRAD_ACCUM}" \
         --num_train_epochs 1 \
@@ -161,7 +181,7 @@ elif [ "$CMD" = "eval-baseline" ]; then
     echo "=== Baseline evaluation complete ==="
 
 else
-    echo "Usage: sbatch --job-name=<name> run_math.sh {train|eval [checkpoint|latest]|eval-baseline}"
+    echo "Usage: sbatch run_math_multi_teacher.sh {train|eval [checkpoint|latest]|eval-baseline}"
     exit 1
 fi
 

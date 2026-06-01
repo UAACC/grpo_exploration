@@ -20,6 +20,7 @@ See also Liu et al. (2025), arXiv:2503.20783 ("Dr. GRPO") for the
 ``/std`` removal rationale.
 """
 
+import copy
 from typing import Any, Union
 
 import torch
@@ -138,13 +139,46 @@ class DrMixtureGRPOTrainer(GRPOTrainer):
     # current LoRA-wrapped policy, score with Math_Verifier, return mean.
     # ------------------------------------------------------------------
     def _compute_live_student_baseline(self, unique_qids, unique_prompts_text,
-                                       unique_problems, unique_golds):
+                                       unique_prompts, unique_problems, unique_golds):
         """Return {qid: r_mean_student(qid) under current policy}."""
         if not unique_qids:
             return {}
 
         tokenizer = self.processing_class
         device = self.accelerator.device
+
+        if self.use_vllm:
+            prev_num_generations = self.num_generations
+            prev_num_generations_eval = self.num_generations_eval
+            prev_max_completion_length = self.max_completion_length
+            prev_temperature = self.temperature
+            prev_top_p = self.top_p
+            prev_generation_config = copy.deepcopy(getattr(self, "generation_config", None))
+            self.num_generations = self._K_s
+            self.num_generations_eval = self._K_s
+            self.max_completion_length = self._baseline_max_new_tokens
+            self.temperature = self._baseline_temperature
+            self.top_p = self._baseline_top_p
+            if getattr(self, "generation_config", None) is not None:
+                self.generation_config.max_new_tokens = self._baseline_max_new_tokens
+                self.generation_config.temperature = self._baseline_temperature
+                self.generation_config.top_p = self._baseline_top_p
+                self.generation_config.do_sample = True
+                self.generation_config.num_return_sequences = self._K_s
+            try:
+                vllm_prompts = [copy.deepcopy(prompt) for prompt in unique_prompts for _ in range(self._K_s)]
+                _, completion_ids, _, _ = self._generate_single_turn(vllm_prompts)
+            finally:
+                self.num_generations = prev_num_generations
+                self.num_generations_eval = prev_num_generations_eval
+                self.max_completion_length = prev_max_completion_length
+                self.temperature = prev_temperature
+                self.top_p = prev_top_p
+                if prev_generation_config is not None:
+                    self.generation_config = prev_generation_config
+
+            texts = tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+            return self._score_student_baseline_texts(unique_qids, unique_problems, unique_golds, texts)
 
         # Left-pad prompts for batched generation.
         tokenizer.padding_side = "left"
@@ -187,9 +221,17 @@ class DrMixtureGRPOTrainer(GRPOTrainer):
         prompt_len = enc["input_ids"].shape[1]
         completion_ids = gen_out[:, prompt_len:]
         texts = tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
+        return self._score_student_baseline_texts(unique_qids, unique_problems, unique_golds, texts)
+
+    def _score_student_baseline_texts(self, unique_qids, unique_problems, unique_golds, texts):
+        expected = len(unique_qids) * self._K_s
+        if len(texts) != expected:
+            raise RuntimeError(
+                f"Live baseline generated {len(texts)} completions for "
+                f"{len(unique_qids)} prompts with K_s={self._K_s}; expected {expected}."
+            )
 
         # Score and aggregate per qid.
-        N = len(unique_qids)
         baseline: dict[int, float] = {}
         for i, qid in enumerate(unique_qids):
             problem = unique_problems[i]
@@ -255,7 +297,7 @@ class DrMixtureGRPOTrainer(GRPOTrainer):
 
         # ---- 3. Live student baseline: generate K_s under CURRENT policy.
         # Dedupe in-batch qids to avoid regenerating the same prompt num_gen times.
-        seen_qids: dict[int, tuple[str, str, str]] = {}
+        seen_qids: dict[int, tuple[str, Any, str, str]] = {}
         for qid, p_text, x in zip(question_ids, prompts_text, inputs):
             qid_i = int(qid)
             if qid_i not in seen_qids:
@@ -267,15 +309,16 @@ class DrMixtureGRPOTrainer(GRPOTrainer):
                         if msg.get("role") == "user":
                             problem = msg.get("content", "")
                             break
-                seen_qids[qid_i] = (p_text, problem, x.get("answer", ""))
+                seen_qids[qid_i] = (p_text, x.get("prompt"), problem, x.get("answer", ""))
 
         unique_qids = list(seen_qids.keys())
         unique_prompts_text = [seen_qids[q][0] for q in unique_qids]
-        unique_problems = [seen_qids[q][1] for q in unique_qids]
-        unique_golds = [seen_qids[q][2] for q in unique_qids]
+        unique_prompts = [seen_qids[q][1] for q in unique_qids]
+        unique_problems = [seen_qids[q][2] for q in unique_qids]
+        unique_golds = [seen_qids[q][3] for q in unique_qids]
 
         live_baseline = self._compute_live_student_baseline(
-            unique_qids, unique_prompts_text, unique_problems, unique_golds,
+            unique_qids, unique_prompts_text, unique_prompts, unique_problems, unique_golds,
         )
 
         # ---- 4. Dr.Mixture advantage: A = r_teacher - r_mean_student(qid).
@@ -384,6 +427,7 @@ class DrMixtureGRPOTrainer(GRPOTrainer):
             "completion_mask": completion_mask,
             "advantages": advantages,
             "old_per_token_logps": old_per_token_logps,
+            "importance_sampling_ratio": torch.ones_like(completion_mask, dtype=torch.float32),
             "num_items_in_batch": num_items_in_batch,
             # Surface raw inputs for the DG variant to reuse.
             "dr_live_advantages": advantages,

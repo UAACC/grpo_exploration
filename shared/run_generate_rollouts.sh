@@ -8,27 +8,30 @@
 #   DATASET=acereason sbatch --job-name=rollouts-acereason run_generate_rollouts.sh
 #
 #SBATCH --account=aip-szepesva
-#SBATCH --time=03:00:00
-#SBATCH --gpus-per-node=l40s:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --time=12:00:00
+#SBATCH --gpus-per-node=l40s:4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=256G
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
 
 DATASET="${DATASET:?Set DATASET env var (svamp, asdiv, etc.)}"
-SCRATCH="${SCRATCH:-/home/shuai14/scratch/scratch_dongheng}"
+SCRATCH="${SCRATCH:-/scratch/shuai14}"
 WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration"
-TEACHER="${TEACHER:-${SCRATCH}/models/Qwen2.5-Math-7B-Instruct}"
+TEACHER_NAME="${TEACHER_NAME:-Qwen2.5-Math-1.5B-Instruct}"
+TEACHER="${TEACHER:-${SCRATCH}/models/${TEACHER_NAME}}"
 NUM_GEN="${NUM_GEN:-5}"
 TEMP="${TEMP:-0.7}"
+TP_SIZE="${TP_SIZE:-4}"
+CUDA_DEVICES="${CUDA_DEVICES:-0,1,2,3}"
 
 OUTPUT_DIR="${SCRATCH}/rollouts/${DATASET}_teacher"
-OUTPUT_PATH="${OUTPUT_DIR}/rollouts_${DATASET}.jsonl"
+OUTPUT_PATH="${OUTPUT_DIR}/rollouts_${DATASET}_${TEACHER_NAME}_${TEMP}.jsonl"
 
 module load python/3.11 cuda/12.6 arrow opencv
-source "/home/shuai14/projects/aip-szepesva/shuai14/verifiers/.venv/bin/activate"
+source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
 export HF_HOME="${SCRATCH}"
 export HF_DATASETS_CACHE="${SCRATCH}/datasets/${DATASET^^}"
 export TRANSFORMERS_OFFLINE=1
@@ -36,7 +39,7 @@ export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-mkdir -p "${OUTPUT_DIR}" "${WORK_DIR}/shared/logs"
+mkdir -p "${OUTPUT_DIR}" "${WORK_DIR}/logs"
 
 cd "${WORK_DIR}"
 
@@ -47,14 +50,18 @@ if [ "${DATASET}" = "asdiv" ] || [ "${DATASET}" = "acereason" ]; then
 fi
 
 echo "=== Generating ${DATASET} teacher rollouts ==="
+echo "  Teacher name: ${TEACHER_NAME}"
 echo "  Teacher: ${TEACHER}"
 echo "  Output: ${OUTPUT_PATH}"
 echo "  Num generations: ${NUM_GEN}"
+echo "  Tensor parallel size: ${TP_SIZE}"
 
-CUDA_VISIBLE_DEVICES=0 python shared/generate_rollouts.py \
+CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" python shared/generate_rollouts.py \
     --dataset "${DATASET}" \
     --teacher_model "${TEACHER}" \
     --output_path "${OUTPUT_PATH}" \
     --num_generations "${NUM_GEN}" \
     --temperature "${TEMP}" \
+    --tensor_parallel_size "${TP_SIZE}" \
     ${EXTRA_ARGS}
+

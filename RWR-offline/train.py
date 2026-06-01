@@ -1,7 +1,7 @@
-"""Train with Delightful offline GRPO.
+"""Train with RWR-style offline GRPO.
 
-Uses pre-collected teacher rollouts but replaces IS-ratio weighting with
-DG's sigmoid gate on delight = advantage x surprisal.
+Uses pre-collected teacher rollouts with signed correctness rewards:
++1 for correct answers and -1 for wrong answers.
 
 Usage:
     accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
@@ -31,6 +31,13 @@ _project_root = os.path.dirname(_this_dir)
 sys.path.insert(0, os.path.join(_project_root, "offline_grpo"))
 
 from data import load_rollouts, compute_rewards_and_advantages, build_training_dataset, build_offline_lookup
+
+
+def assign_signed_correctness_rewards(records: list[dict]) -> list[dict]:
+    """Use signed correctness rewards: +1 for correct, -1 for wrong."""
+    for rec in records:
+        rec["reward"] = 1.0 if rec.get("reward", 0.0) > 0.0 else -1.0
+    return records
 
 
 class MetricsFileCallback(TrainerCallback):
@@ -119,8 +126,9 @@ def main():
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
+    records = assign_signed_correctness_rewards(records)
     correct = sum(1 for r in records if r["reward"] > 0)
-    print(f"  Rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
+    print(f"  Signed rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
 
     dataset = build_training_dataset(records)
     offline_data = build_offline_lookup(records)
@@ -220,7 +228,8 @@ def main():
         import wandb
         if wandb.run is not None:
             wandb.config.update({
-                "method": "dg-offline-grpo",
+                "method": "rwr-offline-grpo",
+                "reward_regime": "signed_correctness_minus1_plus1",
                 "target_model": args.target_model,
                 "behavior_model": args.behavior_model or "unknown",
                 "rollout_path": args.rollout_path,

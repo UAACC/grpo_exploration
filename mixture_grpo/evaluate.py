@@ -108,6 +108,19 @@ def main():
         import tempfile
         output = args.merged_output or tempfile.mkdtemp(prefix="merged_lora_")
         model_name = merge_lora(args.base_model, args.model_path, output)
+        argv = [sys.executable, __file__, "--model_path", model_name]
+        skip_next = False
+        for arg in sys.argv[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--merge_lora":
+                continue
+            if arg in ("--base_model", "--merged_output", "--model_path"):
+                skip_next = True
+                continue
+            argv.append(arg)
+        os.execv(sys.executable, argv)
 
     llm = LLM(
         model=model_name,

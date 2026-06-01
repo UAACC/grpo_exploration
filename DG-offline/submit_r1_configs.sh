@@ -84,7 +84,7 @@ if [ "${SUBMIT_DG}" = "1" ]; then
     for ETA in 0.1 0.5 1.0 2.0; do
         SAFE_ETA="${ETA/./_}"   # 0.5 -> 0_5
         submit "dg-r1-eta${SAFE_ETA}" \
-            --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",CHECKPOINT_DIR="${SCRATCH}/checkpoints/dg_offline_math_r1_eta${SAFE_ETA}",MERGED_DIR="${SCRATCH}/merged/dg_offline_math_r1_eta${SAFE_ETA}",DG_ETA="${ETA}",MAX_COMPLETION_LENGTH="${MAX_COMPL}",MAX_PROMPT_LENGTH="${MAX_PROMPT}",PER_DEVICE_BATCH="${PER_DEVICE_BATCH}",GRAD_ACCUM="${DG_GRAD_ACCUM}",WANDB_PROJECT="dg-offline-math-r1" \
+            --export=ALL,ROLLOUT_PATH="${ROLLOUT_PATH_R1}",CHECKPOINT_DIR="${SCRATCH}/checkpoints/dg_offline_math_r1_eta${SAFE_ETA}",MERGED_DIR="${SCRATCH}/merged/dg_offline_math_r1_eta${SAFE_ETA}",DG_ETA="${ETA}",TRAINING_REGIME="${TRAINING_REGIME:-current}",MAX_COMPLETION_LENGTH="${MAX_COMPL}",MAX_PROMPT_LENGTH="${MAX_PROMPT}",PER_DEVICE_BATCH="${PER_DEVICE_BATCH}",GRAD_ACCUM="${DG_GRAD_ACCUM}",WANDB_PROJECT="dg-offline-math-r1" \
             DG-offline/run_math.sh
     done
 fi

@@ -7,8 +7,9 @@ Combines:
   - DG gate:            weight = sigmoid(delight / eta), delight = A * surprisal,
     where surprisal = -log pi_current over the teacher completion.
 
-Inherits everything from DrMixtureGRPOTrainer; just multiplies the final
-``advantages`` by the DG gate before returning.
+Inherits DrMixtureGRPOTrainer's offline rollout lookup, live student baseline,
+and colocated vLLM generation path; just multiplies the final ``advantages`` by
+the DG gate before returning.
 
 Note on eta scale. Plain DG-offline used eta values calibrated for within-
 group-normalized advantages (A in roughly [-1, 1]). Under Dr.Mixture, A is on
@@ -76,6 +77,8 @@ class DrDGMixtureTrainer(DrMixtureGRPOTrainer):
             gated_adv = mean_gate * adv
 
         out["advantages"] = gated_adv
+        if self.use_vllm and "importance_sampling_ratio" not in out:
+            out["importance_sampling_ratio"] = torch.ones_like(completion_mask, dtype=torch.float32)
 
         mode = "train" if self.model.training else "eval"
         if self._dg_gating == "completion":
