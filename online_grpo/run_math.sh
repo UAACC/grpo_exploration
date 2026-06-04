@@ -4,8 +4,10 @@
 #   Hardware: 4x L40s with DDP + 1 GPU for vLLM generation (colocate mode)
 #
 # Usage:
-#   sbatch --job-name=online-grpo-math run_math.sh train
-#   sbatch --job-name=online-grpo-math-eval --gpus-per-node=l40s:1 --cpus-per-task=16 --mem=64G --time=0:30:00 run_math.sh eval
+#   sbatch run_math.sh train              # train, then eval final model
+#   sbatch run_math.sh eval               # eval latest checkpoint
+#   sbatch run_math.sh eval checkpoint-500 # eval a named checkpoint
+#   sbatch run_math.sh eval-baseline      # eval base model
 #
 #SBATCH --account=aip-szepesva
 #SBATCH --time=24:00:00
@@ -15,30 +17,78 @@
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
-set -e
+set -euo pipefail
 
-WORK_DIR="/project/aip-szepesva/mrli/backup_dongheng/online_grpo"
-SCRATCH="/scratch/mrli"
+# ---- Paths (configurable via env vars) --------------------------------
+SCRATCH="${SCRATCH:-/scratch/shuai14}"
+WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/online_grpo"
 CONFIG_DIR="${WORK_DIR}/configs"
+EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
 
-MODEL_DIR="${SCRATCH}/models/Qwen2.5-0.5B-Instruct"
-OUTPUT_DIR="${SCRATCH}/checkpoints/online_grpo_math"
+MODEL_DIR="${MODEL_DIR:-${SCRATCH}/models/Qwen2.5-0.5B-Instruct}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH}/checkpoints/online_grpo_math}"
+MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/online_grpo_math}"
 
-# ── Activate environment ─────────────────────────────────────────────
+# ---- Environment ------------------------------------------------------
 module load python/3.11 cuda/12.6 arrow opencv
-source /project/aip-szepesva/mrli/backup_dongheng/.venv/bin/activate
+source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
 export HF_HOME="${SCRATCH}"
-export HF_DATASETS_CACHE="/scratch/mrli/datasets/MATH"
+export HF_DATASETS_CACHE="${SCRATCH}/datasets/MATH"
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
-export WANDB_API_KEY=$(cat /project/aip-szepesva/mrli/backup_dongheng/offline_grpo/.wandb_key)
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
+
+if [ -f "${WORK_DIR}/.wandb_key" ]; then
+    export WANDB_API_KEY=$(cat "${WORK_DIR}/.wandb_key")
+    echo "Loaded Weights & Biases API key from file."
+elif [ -f "/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key" ]; then
+    export WANDB_API_KEY=$(cat /project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/DG-offline/.wandb_key)
+    echo "Loaded Weights & Biases API key from DG-offline."
+fi
+
+mkdir -p "${WORK_DIR}/logs"
 cd "${WORK_DIR}"
 
-case "${1}" in
+resolve_eval_checkpoint() {
+    local ckpt="${1:-latest}"
+    local ckpt_path
 
-# ── Training ──────────────────────────────────────────────────────────
+    if [ "${ckpt}" = "latest" ]; then
+        ckpt_path=$(ls -d "${OUTPUT_DIR}"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1 || true)
+        if [ -z "${ckpt_path}" ]; then
+            echo "No checkpoint found in ${OUTPUT_DIR}; evaluating ${OUTPUT_DIR} directly" >&2
+            ckpt_path="${OUTPUT_DIR}"
+        fi
+    elif [ -d "${ckpt}" ]; then
+        ckpt_path="${ckpt}"
+    else
+        ckpt_path="${OUTPUT_DIR}/${ckpt}"
+    fi
+
+    printf "%s\n" "${ckpt_path}"
+}
+
+run_math_eval() {
+    local ckpt_path="$1"
+
+    echo "=== Evaluating ${ckpt_path} on MATH ==="
+    python "${EVAL_SCRIPT}" \
+        --model_path "${ckpt_path}" \
+        --base_model "${MODEL_DIR}" \
+        --merge_lora \
+        --merged_output "${MERGED_DIR}" \
+        --dataset_type math \
+        --runs 30 \
+        --temperature 0.0 \
+        --max_tokens 2048 \
+        --max_model_len 3072
+    echo "=== Evaluation complete ==="
+}
+
+case "${1:-train}" in
+
+# ---- Training ---------------------------------------------------------
 train)
     echo "=== Online GRPO on MATH (4x L40s) ==="
     echo "=== Model: ${MODEL_DIR} ==="
@@ -55,7 +105,7 @@ train)
         --dataset_type math \
         --output_dir "${OUTPUT_DIR}" \
         --num_generations 5 \
-        --num_train_epochs 15 \
+        --num_train_epochs 1 \
         --per_device_train_batch_size 1 \
         --gradient_accumulation_steps 10 \
         --learning_rate 3e-6 \
@@ -70,46 +120,33 @@ train)
         --report_to wandb
 
     echo "=== Training complete. Model saved to ${OUTPUT_DIR} ==="
+    run_math_eval "${OUTPUT_DIR}"
     ;;
 
-# ── Evaluation ────────────────────────────────────────────────────────
+# ---- Evaluation -------------------------------------------------------
 eval)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
-    echo "=== Evaluating trained model on MATH (LoRA merged) ==="
-    MERGED_DIR="${SCRATCH}/merged/online_grpo_math_merged"
-    python "${EVAL_SCRIPT}" \
-        --model_path "${OUTPUT_DIR}" \
-        --base_model "${MODEL_DIR}" \
-        --merge_lora \
-        --merged_output "${MERGED_DIR}" \
-        --dataset_type math \
-        --temperature 0.0 \
-        --runs 10 \
-        --max_tokens 2048 \
-        --max_model_len 3072
-    echo "=== Evaluation complete ==="
+    CKPT_PATH=$(resolve_eval_checkpoint "${2:-latest}")
+    run_math_eval "${CKPT_PATH}"
     ;;
 
 eval-baseline)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
     echo "=== Evaluating baseline on MATH ==="
     python "${EVAL_SCRIPT}" \
         --model_path "${MODEL_DIR}" \
         --dataset_type math \
         --temperature 0.0 \
-        --runs 10 \
+        --runs 30 \
         --max_tokens 2048 \
         --max_model_len 3072
     echo "=== Baseline evaluation complete ==="
     ;;
 
 eval-checkpoints)
-    EVAL_SCRIPT="/project/aip-szepesva/mrli/backup_dongheng/Math_Verifier/eval_unified.py"
     echo "=== Evaluating multiple checkpoints on MATH ==="
     for step in 1000 2000 3000 5000 7000; do
         ckpt="${OUTPUT_DIR}/checkpoint-${step}"
         if [ -d "${ckpt}" ]; then
-            merged="${SCRATCH}/merged/online_grpo_math_merged_step${step}"
+            merged="${MERGED_DIR}_step${step}"
             echo "--- Checkpoint step ${step} ---"
             python "${EVAL_SCRIPT}" \
                 --model_path "${ckpt}" \
@@ -118,7 +155,7 @@ eval-checkpoints)
                 --merged_output "${merged}" \
                 --dataset_type math \
                 --temperature 0.0 \
-                --runs 10 \
+                --runs 30 \
                 --max_tokens 2048 \
                 --max_model_len 3072
         else
@@ -130,7 +167,7 @@ eval-checkpoints)
         --model_path "${MODEL_DIR}" \
         --dataset_type math \
         --temperature 0.0 \
-        --runs 10 \
+        --runs 30 \
         --max_tokens 2048 \
         --max_model_len 3072
     echo "=== eval-checkpoints complete ==="
@@ -140,13 +177,15 @@ eval-checkpoints)
     echo "Usage: sbatch --job-name=<name> run_math.sh <command>"
     echo ""
     echo "Training (4x L40s):"
-    echo "  train              - Online GRPO with LoRA on MATH"
+    echo "  train              - Online GRPO with LoRA on MATH, then eval"
     echo ""
     echo "Evaluation (1x L40s):"
-    echo "  eval               - Evaluate trained model (merge LoRA)"
+    echo "  eval [ckpt|latest] - Evaluate trained model (merge LoRA)"
     echo "  eval-baseline      - Evaluate base model (no training)"
     echo "  eval-checkpoints   - Eval multiple checkpoints + baseline"
     exit 1
     ;;
 
 esac
+
+echo "=== Done ==="

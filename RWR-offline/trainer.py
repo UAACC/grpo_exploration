@@ -28,6 +28,7 @@ class RWROfflineTrainer(GRPOTrainer):
         offline_data: dict,
         dg_temperature: float = 1.0,
         dg_gating: str = "completion",
+        training_signal: str = "reward",
         ref_sync_steps: int = 0,
         **kwargs,
     ):
@@ -40,6 +41,8 @@ class RWROfflineTrainer(GRPOTrainer):
             dg_gating: deprecated. How to compute surprisal for the gate.
                 "completion" = mean per-token surprisal over the completion.
                 "token" = per-token gating (each token gets its own gate).
+            training_signal: "reward" uses raw rewards; "advantage" uses
+                group-normalized advantages.
             ref_sync_steps: Sync reference LoRA adapter every N steps.
                 0 = never sync (use original base model via disable_adapter).
         """
@@ -47,6 +50,9 @@ class RWROfflineTrainer(GRPOTrainer):
         self._offline_data = offline_data
         self._dg_temperature = dg_temperature
         self._dg_gating = dg_gating
+        self._training_signal = training_signal
+        if self._training_signal not in ("reward", "advantage"):
+            raise ValueError(f"Unknown training_signal: {self._training_signal}")
         self._ref_sync_steps = ref_sync_steps
         self._ref_adapter_state = None
         self._steps_since_ref_sync = 0
@@ -121,6 +127,7 @@ class RWROfflineTrainer(GRPOTrainer):
 
         completion_id_lists = []
         rewards_list = []
+        signal_list = []
 
         for qid, rid in zip(question_ids, run_ids):
             rec = self._offline_data.get((qid, rid))
@@ -131,6 +138,7 @@ class RWROfflineTrainer(GRPOTrainer):
                 )
             completion_id_lists.append(rec["completion_ids"])
             rewards_list.append(rec["reward"])
+            signal_list.append(rec[self._training_signal])
 
         # ---- 3. Pad completions & build masks -----------------------------
         max_comp_len = max(len(c) for c in completion_id_lists)
@@ -155,6 +163,7 @@ class RWROfflineTrainer(GRPOTrainer):
         completion_ids = torch.stack(completion_ids_tensors)
         completion_mask = torch.stack(completion_mask_tensors)
         rewards = torch.tensor(rewards_list, dtype=torch.float32, device=device)
+        training_signal = torch.tensor(signal_list, dtype=torch.float32, device=device)
 
         # ---- 4. Compute current policy logprobs ---------------------------
         prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
@@ -176,7 +185,7 @@ class RWROfflineTrainer(GRPOTrainer):
             delight = rewards * completion_surprisal
             gate = torch.sigmoid(delight / self._dg_temperature)  # (B,)
             gate = torch.ones_like(gate)
-            gated_rewards = gate * rewards
+            gated_rewards = gate * training_signal
         elif self._dg_gating == "token":
             # Per-token gating: each token gets its own gate
             per_token_delight = rewards.unsqueeze(1) * surprisal  # (B, C)
@@ -185,7 +194,7 @@ class RWROfflineTrainer(GRPOTrainer):
             # by using a single scalar reward weighted by the mean gate.
             mean_gate = (per_token_gate * completion_mask).sum(dim=1) / completion_mask.sum(dim=1).clamp(min=1)
             mean_gate = torch.ones_like(mean_gate)
-            gated_rewards = mean_gate * rewards
+            gated_rewards = mean_gate * training_signal
         else:
             raise ValueError(f"Unknown dg_gating mode: {self._dg_gating}")
 
@@ -226,6 +235,7 @@ class RWROfflineTrainer(GRPOTrainer):
 
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(rewards.std().item())
+        self._metrics[mode]["rwr/training_signal"].append(training_signal.mean().item())
 
         # DG-specific metrics
         if self._dg_gating == "completion":

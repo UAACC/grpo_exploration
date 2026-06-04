@@ -1,7 +1,6 @@
 """Train with RWR-style offline GRPO.
 
-Uses pre-collected teacher rollouts with signed correctness rewards:
-+1 for correct answers and -1 for wrong answers.
+Uses pre-collected teacher rollouts with configurable correctness rewards.
 
 Usage:
     accelerate launch --config_file configs/accelerate_ddp_4gpu.yaml \
@@ -68,6 +67,15 @@ def parse_args():
     # Data
     p.add_argument("--rollout_path", type=str, required=True,
                     help="Path to teacher rollouts JSONL.")
+    p.add_argument("--training_regime", "--reward_regime", dest="training_regime",
+                    type=str, default="signed_reward",
+                    choices=["current", "signed_reward", "signed_reward_dr_grpo",
+                             "correctness", "signed_correctness"],
+                    help=(
+                        "'current' keeps existing 0/1 rewards. "
+                        "'signed_reward' uses -1/+1 signed rewards. "
+                        "'correctness' and 'signed_correctness' are aliases."
+                    ))
     # Output
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--run_name", type=str, default=None)
@@ -77,6 +85,9 @@ def parse_args():
     p.add_argument("--dg_gating", type=str, default="completion",
                     choices=["completion", "token"],
                     help="Gating granularity: per-completion or per-token. Deprecated.")
+    p.add_argument("--training_signal", type=str, default="reward",
+                    choices=["reward", "advantage"],
+                    help="Scalar to pass as TRL advantages.")
     # Training hyperparams
     p.add_argument("--learning_rate", type=float, default=3e-6)
     p.add_argument("--beta", type=float, default=0.001,
@@ -92,6 +103,9 @@ def parse_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.1)
     p.add_argument("--lr_scheduler_type", type=str, default="cosine")
+    p.add_argument("--loss_type", type=str, default=None,
+                    choices=["grpo", "bnpo", "dr_grpo", "dapo"],
+                    help="TRL GRPO loss formulation. Defaults to TRL's GRPOConfig default when omitted.")
     p.add_argument("--save_steps", type=int, default=500)
     p.add_argument("--logging_steps", type=int, default=1)
     # LoRA
@@ -116,6 +130,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.training_regime in ("signed_reward_dr_grpo", "signed_correctness"):
+        args.training_regime = "signed_reward"
+    elif args.training_regime == "correctness":
+        args.training_regime = "current"
     time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
 
     # ---- 1. Load & process offline rollouts ----------------------------
@@ -126,9 +144,10 @@ def main():
     print(f"  {len(records)} completions loaded")
 
     records = compute_rewards_and_advantages(records)
-    records = assign_signed_correctness_rewards(records)
+    if args.training_regime == "signed_reward":
+        records = assign_signed_correctness_rewards(records)
     correct = sum(1 for r in records if r["reward"] > 0)
-    print(f"  Signed rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
+    print(f"  Rewards: {correct}/{len(records)} correct ({100*correct/len(records):.1f}%)")
 
     dataset = build_training_dataset(records)
     offline_data = build_offline_lookup(records)
@@ -172,6 +191,10 @@ def main():
     if args.wandb_project:
         os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
 
+    loss_type_args = {}
+    if args.loss_type is not None:
+        loss_type_args["loss_type"] = args.loss_type
+
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         run_name=args.run_name,
@@ -194,6 +217,7 @@ def main():
         report_to=args.report_to,
         log_on_each_node=False,
         seed=args.seed,
+        **loss_type_args,
     )
 
     # ---- 5. Create trainer & train -------------------------------------
@@ -213,13 +237,17 @@ def main():
         offline_data=offline_data,
         dg_temperature=args.dg_temperature,
         dg_gating=args.dg_gating,
+        training_signal=args.training_signal,
         ref_sync_steps=args.ref_sync_steps,
         callbacks=[metrics_callback],
     )
 
     print(f"=== RWR Offline GRPO ===")
+    print(f"  Training regime: {args.training_regime}")
     print(f"  temperature (eta), deprecated: {args.dg_temperature}")
     print(f"  DG gating constant 1")
+    print(f"  Training signal: {args.training_signal}")
+    print(f"  Loss type: {training_args.loss_type}")
     print(f"  Beta (KL): {trainer.beta}")
     print(f"  LoRA: {peft_config is not None}")
     print(f"  ref_sync_steps: {args.ref_sync_steps}")
@@ -229,7 +257,9 @@ def main():
         if wandb.run is not None:
             wandb.config.update({
                 "method": "rwr-offline-grpo",
-                "reward_regime": "signed_correctness_minus1_plus1",
+                "training_regime": args.training_regime,
+                "loss_type": training_args.loss_type,
+                "training_signal": args.training_signal,
                 "target_model": args.target_model,
                 "behavior_model": args.behavior_model or "unknown",
                 "rollout_path": args.rollout_path,

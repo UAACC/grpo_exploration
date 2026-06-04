@@ -24,11 +24,13 @@ TEACHER_NAME="${TEACHER_NAME:-Qwen2.5-Math-1.5B-Instruct}"
 TEACHER="${TEACHER:-${SCRATCH}/models/${TEACHER_NAME}}"
 NUM_GEN="${NUM_GEN:-5}"
 TEMP="${TEMP:-0.7}"
+TOP_P="${TOP_P:-1.0}"
+TOP_K="${TOP_K:--1}"
 TP_SIZE="${TP_SIZE:-4}"
 CUDA_DEVICES="${CUDA_DEVICES:-0,1,2,3}"
 
 OUTPUT_DIR="${SCRATCH}/rollouts/${DATASET}_teacher"
-OUTPUT_PATH="${OUTPUT_DIR}/rollouts_${DATASET}_${TEACHER_NAME}_${TEMP}.jsonl"
+OUTPUT_PATH="${OUTPUT_DIR}/rollouts_${DATASET}_${TEACHER_NAME}_temp${TEMP}_topp${TOP_P}_topk${TOP_K}.jsonl"
 
 module load python/3.11 cuda/12.6 arrow opencv
 source /project/aip-szepesva/shuai14/verifiers/.venv/bin/activate
@@ -54,6 +56,7 @@ echo "  Teacher name: ${TEACHER_NAME}"
 echo "  Teacher: ${TEACHER}"
 echo "  Output: ${OUTPUT_PATH}"
 echo "  Num generations: ${NUM_GEN}"
+echo "  Sampling: temp=${TEMP}, top_p=${TOP_P}, top_k=${TOP_K}"
 echo "  Tensor parallel size: ${TP_SIZE}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" python shared/generate_rollouts.py \
@@ -62,6 +65,8 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" python shared/generate_rollouts.py \
     --output_path "${OUTPUT_PATH}" \
     --num_generations "${NUM_GEN}" \
     --temperature "${TEMP}" \
+    --top_p "${TOP_P}" \
+    --top_k "${TOP_K}" \
     --tensor_parallel_size "${TP_SIZE}" \
     ${EXTRA_ARGS}
 

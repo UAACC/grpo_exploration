@@ -28,6 +28,8 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--top_p", type=float, default=1.0,
                     help="Nucleus sampling. R1-distilled teachers want 0.95.")
+    p.add_argument("--top_k", type=int, default=-1,
+                    help="Keep only the top-k tokens for sampling. Use -1 to disable.")
     p.add_argument("--max_tokens", type=int, default=None,
                     help="Override cfg.max_tokens. R1-distilled teachers want 16384+ "
                     "(or 32768 if you can pay the training-time cost).")
@@ -89,7 +91,7 @@ def main():
     max_tokens = args.max_tokens if args.max_tokens is not None else cfg.max_tokens
     max_model_len = args.max_model_len if args.max_model_len is not None else cfg.max_model_len
 
-    print(f"  Sampling: temp={args.temperature}, top_p={args.top_p}")
+    print(f"  Sampling: temp={args.temperature}, top_p={args.top_p}, top_k={args.top_k}")
     print(f"  Lengths: max_tokens={max_tokens}, max_model_len={max_model_len}")
     print(f"  No system prompt: {args.no_system_prompt}")
 
@@ -108,6 +110,7 @@ def main():
     params = SamplingParams(
         temperature=args.temperature,
         top_p=args.top_p,
+        top_k=args.top_k,
         max_tokens=max_tokens,
         seed=args.seed,
         logprobs=1,

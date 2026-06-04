@@ -9,6 +9,9 @@
 #   sbatch run_math.sh eval-baseline      # eval base student model
 #   DG_ETA=0.5 sbatch run_math.sh train   # custom eta
 #   DG_ETA=2.0 sbatch run_math.sh train   # softer gate
+#   LOSS_TYPE=dr_grpo sbatch run_math.sh train # choose grpo, bnpo, dr_grpo, or dapo
+#   TRAINING_REGIME=signed_reward sbatch run_math.sh train # choose current or signed_reward
+#   TRAINING_SIGNAL=advantage sbatch run_math.sh train # choose reward or advantage
 #   aip-szepesva
 #SBATCH --account=aip-szepesva
 #SBATCH --job-name=AWR-offline-math
@@ -27,7 +30,7 @@ SCRATCH="${SCRATCH:-/scratch/shuai14}"
 WORK_DIR="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/AWR-offline"
 EVAL_SCRIPT="/project/aip-szepesva/shuai14/DG_LLM/grpo_exploration/mixture_grpo/evaluate.py"
 
-STUDENT_MODEL="${STUDENT_MODEL:-/scratch/shuai14/models/Qwen2.5-0.5B-Instruct}"
+STUDENT_MODEL="${STUDENT_MODEL:-/scratch/shuai14/models/Qwen2.5-0.5B}"
 TEACHER_MODEL="${TEACHER_MODEL:-/scratch/shuai14/models/Qwen2.5-Math-7B-Instruct}"
 ROLLOUT_PATH="${ROLLOUT_PATH:-/scratch/shuai14/rollouts/math_teacher/rollouts_full.jsonl}"
 CHECKPOINT_DIR="${CHECKPOINT_DIR:-${SCRATCH}/checkpoints/AWR_offline_math}"
@@ -37,6 +40,13 @@ MERGED_DIR="${MERGED_DIR:-${SCRATCH}/merged/AWR_offline_math}"
 #if not set, default to 1.0 (no gating)
 DG_ETA="${DG_ETA:-1.0}"
 DG_GATING="${DG_GATING:-completion}"
+TRAINING_REGIME="${TRAINING_REGIME:-${REWARD_REGIME:-current}}"
+TRAINING_SIGNAL="${TRAINING_SIGNAL:-reward}"
+LOSS_TYPE="${LOSS_TYPE:-}"
+LOSS_TYPE_ARGS=()
+if [ -n "${LOSS_TYPE}" ]; then
+    LOSS_TYPE_ARGS=(--loss_type "${LOSS_TYPE}")
+fi
 MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
@@ -74,6 +84,10 @@ echo "  Teacher: ${TEACHER_MODEL}"
 echo "  Rollouts: ${ROLLOUT_PATH}"
 echo "  AWR eta: ${DG_ETA}"
 echo "  AWR gating: ${DG_GATING}"
+echo "  Training regime: ${TRAINING_REGIME}"
+echo "  Training signal: ${TRAINING_SIGNAL}"
+echo "  Reward regime: ${TRAINING_REGIME}"
+echo "  Loss used/requested: ${LOSS_TYPE:-train.py default}"
 echo "  Output: ${CHECKPOINT_DIR}"
 
 resolve_eval_checkpoint() {
@@ -125,6 +139,9 @@ if [ "$CMD" = "train" ]; then
         --wandb_project "${WANDB_PROJECT}" \
         --dg_temperature "${DG_ETA}" \
         --dg_gating "${DG_GATING}" \
+        --training_regime "${TRAINING_REGIME}" \
+        --training_signal "${TRAINING_SIGNAL}" \
+        "${LOSS_TYPE_ARGS[@]}" \
         --learning_rate 6e-7 \
         --beta 0.001 \
         --num_generations 4 \

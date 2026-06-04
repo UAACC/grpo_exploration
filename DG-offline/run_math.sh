@@ -9,10 +9,11 @@
 #   sbatch run_math.sh eval-baseline      # eval base student model
 #   DG_ETA=0.5 sbatch run_math.sh train   # custom eta
 #   DG_ETA=2.0 sbatch run_math.sh train   # softer gate
+#   LEARNING_RATE=1e-6 sbatch run_math.sh train
 #   TRAINING_REGIME=signed_reward LOSS_TYPE=dr_grpo sbatch run_math.sh train
 #   LOSS_TYPE=dr_grpo sbatch run_math.sh train # choose grpo or dr_grpo
 #   aip-szepesva
-#SBATCH --account=aip-szepesva
+#SBATCH --account=aip-xt7
 #SBATCH --job-name=dg-offline-math
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
@@ -49,6 +50,7 @@ MAX_COMPLETION_LENGTH="${MAX_COMPLETION_LENGTH:-2048}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
 PER_DEVICE_BATCH="${PER_DEVICE_BATCH:-4}"
 GRAD_ACCUM="${GRAD_ACCUM:-2}"
+LEARNING_RATE="${LEARNING_RATE:-3e-6}"
 WANDB_PROJECT="${WANDB_PROJECT:-dg-offline-math}"
 
 # ---- Environment ------------------------------------------------------
@@ -78,6 +80,7 @@ echo "  DG eta: ${DG_ETA}"
 echo "  DG gating: ${DG_GATING}"
 echo "  Training regime: ${TRAINING_REGIME}"
 echo "  Loss type: ${LOSS_TYPE:-train.py default}"
+echo "  Learning rate: ${LEARNING_RATE}"
 echo "  Output: ${CHECKPOINT_DIR}"
 
 resolve_eval_checkpoint() {
@@ -131,7 +134,7 @@ if [ "$CMD" = "train" ]; then
         --dg_gating "${DG_GATING}" \
         --training_regime "${TRAINING_REGIME}" \
         "${LOSS_TYPE_ARGS[@]}" \
-        --learning_rate 3e-6 \
+        --learning_rate "${LEARNING_RATE}" \
         --beta 0.001 \
         --num_generations 4 \
         --per_device_train_batch_size "${PER_DEVICE_BATCH}" \
