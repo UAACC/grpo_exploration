@@ -35,6 +35,7 @@ docs/*
 !Math_Verifier/**
 !RWR-offline/**
 !AWR-offline/**
+!SoftDG-Offline-to-the-bottom/**
 # But exclude runtime artifacts everywhere
 **/__pycache__/
 **/*.pyc
