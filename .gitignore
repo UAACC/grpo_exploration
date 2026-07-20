@@ -11,6 +11,8 @@
 !Math_Verifier/
 !RWR-offline/
 !AWR-offline/
+!SoftDG-Offline-to-the-bottom/
+!SoftDG-Token-Mask-Offline/
 
 # Track root-level supporting files
 !README.md
@@ -36,6 +38,7 @@ docs/*
 !RWR-offline/**
 !AWR-offline/**
 !SoftDG-Offline-to-the-bottom/**
+!SoftDG-Token-Mask-Offline/**
 # But exclude runtime artifacts everywhere
 **/__pycache__/
 **/*.pyc
